@@ -1,38 +1,45 @@
 <!doctype html>
 <html lang="pt-BR">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Registro de Ponto</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ponto — Recepção</title>
+<link rel="stylesheet" href="style.css">
 </head>
-<body class="recepcao">
-  <header class="rc-top">
-    <div class="rc-escola"><span class="rc-logo">P</span><span id="nomeEscola">Escola</span></div>
-    <div class="rc-modo" id="modoInfo"></div>
-  </header>
+<body>
+<div class="rec">
+  <div class="card">
+    <h1 id="escola"></h1>
+    <div class="clock" id="clock">--:--:--</div>
+    <div class="date" id="date"></div>
 
-  <main class="rc-main">
-    <section class="rc-relogio">
-      <div class="rc-hora" id="hora">--:--:--</div>
-      <div class="rc-data" id="data"></div>
-      <div class="rc-aviso" id="avisoRelogio" hidden></div>
-    </section>
-    <section class="rc-card" id="painel" aria-live="polite"></section>
-  </main>
+    <div id="s1">
+      <label for="cpf">Digite o seu CPF</label>
+      <input id="cpf" class="cpf" inputmode="numeric" maxlength="14" placeholder="000.000.000-00" autocomplete="off">
+      <div class="pad" id="pad"></div>
+      <button class="btn big" id="ok">Continuar</button>
+    </div>
 
-  <footer class="rc-rodape">
-    Registro de ponto para controle interno · Correções somente pela secretaria/direção ·
-    <a href="admin.html">Administração</a>
-  </footer>
+    <div id="s2" class="hidden">
+      <div class="who" id="who"></div>
+      <div class="next" id="next"></div>
+      <div class="row2">
+        <button class="btn sec big" id="cancel">Cancelar</button>
+        <button class="btn ok big" id="confirm">Registrar</button>
+      </div>
+    </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
-  <script src="config.js"></script>
-  <script src="calc.js"></script>
-  <script src="db.js"></script>
-  <script src="bio.js"></script>
-  <script src="recepcao.js"></script>
+    <div id="s3" class="hidden">
+      <div class="who" id="done"></div>
+      <div class="muted" id="doneSub"></div>
+    </div>
+
+    <div id="msg"></div>
+    <p class="muted" style="font-size:.8rem;margin-top:16px">Controle interno de ponto.</p>
+  </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script src="recepcao.js"></script>
 </body>
 </html>

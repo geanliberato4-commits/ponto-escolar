@@ -1,722 +1,442 @@
-/* ============================================================
-   admin.js — painel administrativo da direção
-   Páginas: Dashboard, Funcionários, Escalas e horários, Registros,
-   Banco de horas, Ocorrências, Relatórios, Configurações
-   Regras de ouro:
-   - batidas originais NUNCA são editadas nem apagadas;
-     correção = invalidar (com motivo) + lançar batida de ajuste
-   - mudança de horário = novo registro com vigência (sem retroatividade)
-   - toda ação de escrita vai para a auditoria
-   ============================================================ */
 (function () {
-  const cfg = window.PONTO_CONFIG;
-  const S = { sessao: null, funcionarios: [], escalas: [], versoes: [], alteracoes: [], ocorrencias: [], feriados: [], invalidadas: [], config: {}, filtro: {} };
-  const PAGINAS = [
-    ['dashboard', 'Dashboard'], ['funcionarios', 'Funcionários'], ['escalas', 'Escalas e horários'],
-    ['registros', 'Registros de ponto'], ['banco', 'Banco de horas'], ['ocorrencias', 'Ocorrências'],
-    ['relatorios', 'Relatórios'], ['config', 'Configurações']
-  ];
-  const PAG = {};
-  let pagina = 'dashboard';
+  var C = window.CONFIG;
+  var db = supabase.createClient(C.supabaseUrl, C.supabaseKey);
+  var $ = function (id) { return document.getElementById(id); };
+  var TZ = "America/Sao_Paulo";
+  var TIPOS = ["entrada", "almoco_saida", "almoco_retorno", "saida"];
+  var NOMES = { entrada: "Entrada", almoco_saida: "Saída almoço", almoco_retorno: "Retorno almoço", saida: "Saída" };
+  var perfil = null, meuEmail = "", escalas = [], cfg = { tolerancia_min: 5, dias_uteis: [1, 2, 3, 4, 5] };
+  var aba = "dash";
+  var mostrarDesligados = false;
 
-  /* ---------------- utilitários ---------------- */
-  const $ = (s, r = document) => r.querySelector(s);
-  const h = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const podeEditar = () => ['admin', 'gestor'].includes(S.sessao && S.sessao.perfil);
-  const ehAdmin = () => S.sessao && S.sessao.perfil === 'admin';
-  const funcPorId = id => S.funcionarios.find(f => f.id == id);
-  const msgErro = e => (e && e.message) || String(e);
-  const classeSaldo = m => m > 0 ? 'pos' : m < 0 ? 'neg' : '';
-
-  function toast(msg, tipo = 'ok') {
-    const t = document.createElement('div');
-    t.className = 'toast ' + tipo; t.textContent = msg;
-    document.body.appendChild(t); setTimeout(() => t.remove(), 4200);
-  }
-
-  function modal(titulo, corpo, { ok = 'Salvar', onOk, largo } = {}) {
-    const o = document.createElement('div');
-    o.className = 'modal-overlay';
-    o.innerHTML = `<form class="modal ${largo ? 'largo' : ''}" novalidate>
-      <div class="modal-cab"><h3>${h(titulo)}</h3><button type="button" class="x" data-fechar>×</button></div>
-      <div class="modal-corpo">${corpo}</div>
-      <div class="modal-rod"><button type="button" class="btn sec" data-fechar>${onOk ? 'Cancelar' : 'Fechar'}</button>${onOk ? `<button class="btn" type="submit">${ok}</button>` : ''}</div>
-    </form>`;
-    const fechar = () => o.remove();
-    o.querySelectorAll('[data-fechar]').forEach(b => b.onclick = fechar);
-    o.querySelector('form').onsubmit = async e => {
-      e.preventDefault();
-      const fd = new FormData(e.target), dados = {};
-      for (const [k, v] of fd.entries()) dados[k] = typeof v === 'string' ? v.trim() : v;
-      const btn = e.target.querySelector('[type=submit]');
-      btn.disabled = true;
-      try { const r = await onOk(dados, o); if (r !== false) fechar(); }
-      catch (err) { toast(msgErro(err), 'erro'); }
-      btn.disabled = false;
-    };
-    document.body.appendChild(o);
-    const pri = o.querySelector('input,select,textarea'); if (pri) pri.focus();
-    return o;
-  }
-
-  // confirmação dentro do site (substitui o confirm() do navegador)
-  function confirmar(msg, ok = 'Confirmar') {
-    return new Promise(res => {
-      const o = modal('Confirmar', `<p>${h(msg)}</p>`, { ok, onOk: async () => { res(true); } });
-      o.querySelectorAll('[data-fechar]').forEach(b => b.addEventListener('click', () => res(false)));
+  /* ---------- utilidades ---------- */
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
     });
   }
-
-  async function auditar(acao, detalhe) {
-    try { await DB.inserir('auditoria', { acao, detalhe }); } catch (e) { console.warn('auditoria', e); }
+  function hoje() { return new Date().toLocaleDateString("sv-SE", { timeZone: TZ }); }
+  function hora(iso) { return new Date(iso).toLocaleTimeString("pt-BR", { timeZone: TZ, hour: "2-digit", minute: "2-digit" }); }
+  function dataBR(s) { if (!s) return ""; var p = String(s).slice(0, 10).split("-"); return p[2] + "/" + p[1] + "/" + p[0]; }
+  function hm(min) {
+    var s = min < 0 ? "-" : ""; min = Math.abs(Math.round(min));
+    return s + Math.floor(min / 60) + "h" + String(min % 60).padStart(2, "0");
   }
-  async function gravar(t, row, acao) {
-    const r = await DB.inserir(t, row);
-    await auditar(acao, { tabela: t, id: r.id ?? r.data ?? null, dados: row });
-    return r;
-  }
-
-  const opcoesFunc = (sel, todos) => (todos ? `<option value="">Todos os funcionários</option>` : '') +
-    S.funcionarios.filter(f => f.ativo || f.id == sel).map(f => `<option value="${f.id}" ${f.id == sel ? 'selected' : ''}>${h(f.nome)}</option>`).join('');
-  const opcoesEscala = sel => S.escalas.map(e => { const v = versaoEscala(e.id, hojeLocal(), S.versoes); return `<option value="${e.id}" ${e.id == sel ? 'selected' : ''}>${h(e.nome)} · ${v ? v.entrada.slice(0, 5) + '–' + v.saida.slice(0, 5) : ''}</option>`; }).join('');
-
-  /* ---------------- dados ---------------- */
-  async function carregarBase() {
-    const [f, e, v, a, o, fe, inv, c] = await Promise.all([
-      DB.listar('funcionarios', { order: 'nome' }), DB.listar('escalas', { order: 'id' }),
-      DB.listar('escala_versoes', { order: 'vigencia_inicio' }), DB.listar('alteracoes', { order: 'criado_em' }),
-      DB.listar('ocorrencias', { order: 'data_inicio' }), DB.listar('feriados', { order: 'data' }),
-      DB.listar('batidas_invalidadas'), DB.listar('configuracoes')
-    ]);
-    Object.assign(S, { funcionarios: f, escalas: e, versoes: v, alteracoes: a, ocorrencias: o, feriados: fe, invalidadas: inv });
-    S.config = c[0] || { id: 1, tolerancia_min: 5, tolerancia_clt: false, dias_uteis: [1, 2, 3, 4, 5] };
-    S.config.dias_uteis = (S.config.dias_uteis || [1, 2, 3, 4, 5]).map(Number);
-  }
-  async function batidasPeriodo(ini, fim) {
-    const b = await DB.listar('batidas', { gte: { data: ini }, lte: { data: fim }, order: 'momento' });
-    const inv = new Map(S.invalidadas.map(i => [i.batida_id, i]));
-    return b.map(x => ({ ...x, invalidada: inv.get(x.id) || null }));
-  }
-  function agrupar(bats) {
-    const m = {};
-    for (const b of bats) (m[b.funcionario_id + '|' + b.data] = m[b.funcionario_id + '|' + b.data] || []).push(b);
-    return m;
-  }
-  function calcPeriodo(func, ini, fim, grupo) {
-    const dias = []; let extra = 0, devida = 0, trab = 0, prev = 0;
-    for (let d = ini; d <= fim; d = addDias(d, 1)) {
-      const todas = grupo[func.id + '|' + d] || [];
-      const r = calcularDia(func, d, todas.filter(b => !b.invalidada), S);
-      r.todas = todas;
-      dias.push(r);
-      extra += r.extra; devida += r.devida; trab += r.trabalhado;
-      if (r.status !== 'andamento' && r.status !== 'aguardando') prev += r.prevista;
+  function maskCpf(c) { c = String(c || "").replace(/\D/g, ""); return c.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, "$1.$2.$3-$4"); }
+  function cpfValido(c) {
+    c = String(c).replace(/\D/g, "");
+    if (c.length !== 11 || /^(\d)\1+$/.test(c)) return false;
+    for (var t = 9; t < 11; t++) {
+      var s = 0;
+      for (var i = 0; i < t; i++) s += Number(c[i]) * (t + 1 - i);
+      var d = ((s * 10) % 11) % 10;
+      if (d !== Number(c[t])) return false;
     }
-    return { func, dias, extra, devida, saldo: extra - devida, trabalhado: trab, prevista: prev };
-  }
-  window.ADM = { S, batidasPeriodo, agrupar, calcPeriodo, toast, auditar };
-
-  /* ---------------- seletor de período ---------------- */
-  function periodoHTML(ini, fim) {
-    return `<div class="periodo">
-      <label>De <input type="date" id="pIni" value="${ini}"></label>
-      <label>Até <input type="date" id="pFim" value="${fim}"></label>
-      <button class="btn sec peq" data-p="hoje">Hoje</button>
-      <button class="btn sec peq" data-p="mes">Mês atual</button>
-      <button class="btn sec peq" data-p="ant">Mês anterior</button>
-      <button class="btn peq" data-p="aplicar">Aplicar</button></div>`;
-  }
-  function ligarPeriodo(c, onMudar) {
-    c.querySelector('.periodo').addEventListener('click', e => {
-      const b = e.target.closest('button'); if (!b) return;
-      const hj = hojeLocal(); let ini, fim;
-      if (b.dataset.p === 'hoje') { ini = fim = hj; }
-      else if (b.dataset.p === 'mes') { ini = inicioMes(hj); fim = fimMes(hj); }
-      else if (b.dataset.p === 'ant') { const x = addDias(inicioMes(hj), -1); ini = inicioMes(x); fim = fimMes(x); }
-      else { ini = $('#pIni').value; fim = $('#pFim').value; }
-      if (!ini || !fim || ini > fim) return toast('Período inválido.', 'erro');
-      S.filtro.ini = ini; S.filtro.fim = fim; onMudar();
-    });
-  }
-  const periodoAtual = () => {
-    const hj = hojeLocal();
-    return { ini: S.filtro.ini || inicioMes(hj), fim: S.filtro.fim || fimMes(hj) };
-  };
-
-  /* ---------------- navegação ---------------- */
-  function montarMenu() {
-    $('#menu').innerHTML = PAGINAS.map(([id, nome]) => `<a href="#${id}" data-p="${id}">${nome}<span class="cont" id="cont-${id}"></span></a>`).join('');
-    $('#menu').onclick = e => { const a = e.target.closest('a'); if (!a) return; e.preventDefault(); ir(a.dataset.p); document.body.classList.remove('menu-aberto'); };
-  }
-  function atualizarContadores() {
-    const pend = S.ocorrencias.filter(o => o.status === 'pendente').length;
-    const el = $('#cont-ocorrencias'); if (el) el.textContent = pend ? pend : '';
-  }
-  function ir(p) {
-    if (!PAG[p]) p = 'dashboard';
-    pagina = p; history.replaceState(null, '', '#' + p);
-    document.querySelectorAll('#menu a').forEach(a => a.classList.toggle('ativo', a.dataset.p === p));
-    $('#tituloMobile').textContent = PAGINAS.find(x => x[0] === p)[1];
-    render();
-  }
-  async function render() {
-    const c = $('#conteudo');
-    c.innerHTML = '<div class="carregando">Carregando…</div>';
-    try { await PAG[pagina](c); atualizarContadores(); }
-    catch (e) { console.error(e); c.innerHTML = `<div class="alerta erro">Erro ao carregar: ${h(msgErro(e))}</div>`; }
-  }
-  async function recarregar() { await carregarBase(); await render(); }
-
-  /* ================= DASHBOARD ================= */
-  PAG.dashboard = async c => {
-    const hj = hojeLocal(), ini = inicioMes(hj);
-    const g = agrupar(await batidasPeriodo(ini, hj));
-    const ativos = S.funcionarios.filter(f => f.ativo);
-    let presentes = 0, entraram = 0, semRegistro = 0, atrasos = 0, ext = 0, dev = 0;
-    const linhas = ativos.map(f => {
-      const per = calcPeriodo(f, ini, hj, g);
-      ext += per.extra; dev += per.devida;
-      const d = per.dias[per.dias.length - 1];
-      const m = d.marc;
-      if (m.entrada != null) entraram++;
-      if (m.entrada != null && m.saida == null) presentes++;
-      if (m.entrada == null && d.prevista > 0) semRegistro++;
-      const atr = d.flags.find(x => x.t === 'atraso'); if (atr) atrasos++;
-      let sit = STATUS_LABEL[d.status];
-      if (m.saida != null) sit = 'Jornada encerrada';
-      else if (m.almoco_saida != null && m.almoco_retorno == null) sit = 'No almoço';
-      else if (m.entrada != null) sit = 'Presente';
-      return `<tr><td><b>${h(f.nome)}</b><div class="peq mut">${h(f.cargo || '')}</div></td><td>${h(d.horario.rotulo)}</td>
-        ${TIPOS.map(t => `<td class="num">${min2hm(m[t])}</td>`).join('')}
-        <td><span class="pill ${sit === 'Presente' ? 'verde' : sit === 'No almoço' ? 'azul' : d.prevista > 0 && m.entrada == null ? 'cinza' : ''}">${sit}</span>
-        ${atr ? `<span class="pill vermelho">${atr.txt}</span>` : ''}</td></tr>`;
-    }).join('');
-    const pend = S.ocorrencias.filter(o => o.status === 'pendente').length;
-    c.innerHTML = `
-      <div class="cab"><div><h1>Dashboard</h1><p class="mut">${new Date().toLocaleDateString('pt-BR', { timeZone: TZ, weekday: 'long', day: '2-digit', month: 'long' })} · acumulado de ${fmtData(ini)} até hoje</p></div>
-        ${pend ? `<a class="alerta aviso link" href="#ocorrencias" data-ir="ocorrencias">${pend} ocorrência(s) aguardando aprovação →</a>` : ''}</div>
-      <div class="kpis">
-        <div class="kpi"><span>Funcionários ativos</span><b>${ativos.length}</b></div>
-        <div class="kpi"><span>Presentes agora</span><b>${presentes}</b><small>${entraram} registraram entrada hoje</small></div>
-        <div class="kpi"><span>Sem registro hoje</span><b>${semRegistro}</b></div>
-        <div class="kpi"><span>Atrasos do dia</span><b class="${atrasos ? 'neg' : ''}">${atrasos}</b></div>
-        <div class="kpi"><span>Horas extras (mês)</span><b class="pos">${dur(ext)}</b></div>
-        <div class="kpi"><span>Horas devidas (mês)</span><b class="neg">${dur(dev)}</b></div>
-        <div class="kpi destaque"><span>Saldo geral (mês)</span><b class="${classeSaldo(ext - dev)}">${durSaldo(ext - dev)}</b></div>
-      </div>
-      <div class="card"><h2>Hoje</h2><div class="tabela-wrap"><table>
-        <thead><tr><th>Funcionário</th><th>Horário previsto</th>${TIPOS.map(t => `<th>${TIPO_CURTO[t]}</th>`).join('')}<th>Situação</th></tr></thead>
-        <tbody>${linhas || '<tr><td colspan="7" class="vazio">Nenhum funcionário cadastrado.</td></tr>'}</tbody></table></div></div>`;
-    const lk = c.querySelector('[data-ir]'); if (lk) lk.onclick = e => { e.preventDefault(); ir('ocorrencias'); };
-  };
-
-  /* ================= FUNCIONÁRIOS ================= */
-  PAG.funcionarios = async c => {
-    const hj = hojeLocal();
-    c.innerHTML = `
-      <div class="cab"><div><h1>Funcionários</h1><p class="mut">${S.funcionarios.filter(f => f.ativo).length} ativos · capacidade inicial 20</p></div>
-        ${podeEditar() ? '<button class="btn" id="novo">+ Novo funcionário</button>' : ''}</div>
-      <div class="card"><div class="tabela-wrap"><table>
-        <thead><tr><th>Nome</th><th>CPF</th><th>Cargo</th><th>Admissão</th><th>Horário vigente</th><th>Digitais</th><th>Situação</th><th></th></tr></thead>
-        <tbody>${S.funcionarios.map(f => `<tr class="${f.ativo ? '' : 'inativo'}">
-          <td><b>${h(f.nome)}</b></td><td class="num">${mascaraCPF(f.cpf)}</td><td>${h(f.cargo || '')}</td><td>${fmtData(f.admissao)}</td>
-          <td>${h(resolverHorario(f, hj, S).rotulo)}</td><td>${f.digitais || 0}/2</td>
-          <td><span class="pill ${f.ativo ? 'verde' : 'cinza'}">${f.ativo ? 'Ativo' : 'Inativo'}</span></td>
-          <td class="acoes">${podeEditar() ? `<button class="btn sec peq" data-ed="${f.id}">Editar</button><button class="btn sec peq" data-bio="${f.id}">Digital</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="8" class="vazio">Nenhum funcionário.</td></tr>'}</tbody>
-      </table></div></div>
-      <p class="peq mut">Para mudar a escala ou o horário de alguém, use <b>Escalas e horários</b> — assim fica o histórico com vigência e motivo.</p>`;
-    const nv = $('#novo'); if (nv) nv.onclick = () => formFuncionario();
-    c.querySelectorAll('[data-ed]').forEach(b => b.onclick = () => formFuncionario(funcPorId(b.dataset.ed)));
-    c.querySelectorAll('[data-bio]').forEach(b => b.onclick = () => formDigital(funcPorId(b.dataset.bio)));
-  };
-
-  function formFuncionario(f) {
-    const novo = !f;
-    modal(novo ? 'Novo funcionário' : 'Editar funcionário', `
-      <label>Nome completo<input name="nome" required value="${h(f && f.nome)}"></label>
-      <div class="grid2">
-        <label>CPF<input name="cpf" required inputmode="numeric" value="${f ? formatarCPF(f.cpf) : ''}" oninput="this.value=formatarCPF(this.value)"></label>
-        <label>Data de admissão<input name="admissao" type="date" required value="${h(f && f.admissao)}"></label>
-      </div>
-      <label>Cargo<input name="cargo" required value="${h(f && f.cargo)}"></label>
-      ${novo ? `<label>Escala inicial<select name="escala_id">${opcoesEscala(1)}</select></label>`
-        : `<label class="check"><input type="checkbox" name="ativo" ${f.ativo ? 'checked' : ''}> Funcionário ativo (desmarque em caso de desligamento — o histórico é mantido)</label>`}`,
-      {
-        onOk: async d => {
-          const cpf = soDigitos(d.cpf);
-          if (!d.nome || d.nome.split(/\s+/).length < 2) throw new Error('Informe o nome completo.');
-          if (!cpfValido(cpf)) throw new Error('CPF inválido.');
-          if (S.funcionarios.some(x => x.cpf === cpf && (!f || x.id !== f.id))) throw new Error('Já existe funcionário com este CPF.');
-          if (novo) {
-            if (S.funcionarios.filter(x => x.ativo).length >= 20 && !(await confirmar('Já existem 20 funcionários ativos (capacidade inicial). Cadastrar mesmo assim?'))) return false;
-            await gravar('funcionarios', { nome: d.nome, cpf, cargo: d.cargo, admissao: d.admissao, escala_id: +d.escala_id, ativo: true, digitais: 0 }, 'funcionario.criar');
-            toast('Funcionário cadastrado.');
-          } else {
-            const patch = { nome: d.nome, cpf, cargo: d.cargo, admissao: d.admissao, ativo: d.ativo === 'on' };
-            await DB.atualizar('funcionarios', 'id', f.id, patch);
-            await auditar('funcionario.editar', { id: f.id, antes: { nome: f.nome, cpf: mascaraCPF(f.cpf), cargo: f.cargo, admissao: f.admissao, ativo: f.ativo }, depois: { ...patch, cpf: mascaraCPF(cpf) } });
-            toast('Cadastro atualizado.');
-          }
-          await recarregar();
-        }
-      });
-  }
-
-  function formDigital(f) {
-    if (!Bio.ativo()) return modal('Biometria', '<p>A biometria está desligada em <code>config.js</code> (BIOMETRIA: "desligado").</p>');
-    modal(`Digital · ${f.nome}`, `
-      <div class="alerta info">${h(Bio.descricao)}. ${Bio.modo === 'simulador' ? 'Nenhuma digital real é capturada no simulador.' : 'O cadastro precisa ser feito no computador da recepção, onde o leitor está ligado.'}</div>
-      <p>Digitais cadastradas: <b>${f.digitais || 0} de 2</b></p>
-      <label>Qual dedo cadastrar?<select name="dedo"><option value="1">Dedo 1 (principal)</option><option value="2">Dedo 2 (reserva)</option></select></label>
-      <p class="peq mut">LGPD: o modelo da digital fica somente na ponte local da recepção. No banco fica apenas a quantidade cadastrada.</p>`,
-      {
-        ok: 'Iniciar captura', onOk: async d => {
-          const r = await Bio.cadastrar(f, +d.dedo);
-          if (!r.ok) throw new Error(r.erro || 'Falha no cadastro da digital.');
-          const n = Math.max(f.digitais || 0, +d.dedo);
-          await DB.atualizar('funcionarios', 'id', f.id, { digitais: n });
-          await auditar('biometria.cadastrar', { id: f.id, dedo: +d.dedo, modo: Bio.modo });
-          toast('Digital cadastrada' + (Bio.modo === 'simulador' ? ' (simulação).' : '.'));
-          await recarregar();
-        }
-      });
-  }
-
-  /* ================= ESCALAS E HORÁRIOS ================= */
-  PAG.escalas = async c => {
-    const hj = hojeLocal();
-    const cards = S.escalas.map(e => {
-      const v = versaoEscala(e.id, hj, S.versoes);
-      const fut = S.versoes.filter(x => x.escala_id === e.id && x.vigencia_inicio > hj);
-      const qtd = S.funcionarios.filter(f => f.ativo && resolverHorario(f, hj, S).escalaId === e.id).length;
-      const jor = v ? hm2min(v.saida) - hm2min(v.entrada) - 60 : 0;
-      return `<div class="escala"><h3>${h(e.nome)}</h3>
-        <div class="escala-h">${v ? v.entrada.slice(0, 5) : '--'} <span>→</span> ${v ? v.saida.slice(0, 5) : '--'}</div>
-        <div class="peq mut">Jornada ${dur(jor)} + 1h almoço · ${qtd} funcionário(s)</div>
-        ${fut.map(x => `<div class="pill azul">A partir de ${fmtData(x.vigencia_inicio)}: ${x.entrada.slice(0, 5)}–${x.saida.slice(0, 5)}</div>`).join('')}
-        ${podeEditar() ? `<button class="btn sec peq" data-esc="${e.id}">Alterar horário da escala</button>` : ''}</div>`;
-    }).join('');
-    const hist = [...S.alteracoes].reverse().map(a => {
-      const f = funcPorId(a.funcionario_id);
-      const novo = a.entrada ? `${a.entrada.slice(0, 5)}–${a.saida.slice(0, 5)}` : (S.escalas.find(e => e.id == a.escala_id) || {}).nome;
-      return `<tr><td>${fmtData(partesLocais(a.criado_em).data)}</td><td>${h(f ? f.nome : '#' + a.funcionario_id)}</td>
-        <td><span class="pill ${a.tipo === 'temporaria' ? 'azul' : ''}">${a.tipo === 'temporaria' ? 'Temporária' : 'Permanente'}</span></td>
-        <td>${fmtData(a.data_inicio)}${a.tipo === 'temporaria' ? ' a ' + fmtData(a.data_fim || a.data_inicio) : ' em diante'}</td>
-        <td class="num">${h(a.anterior || '—')}</td><td class="num"><b>${h(novo)}</b></td><td>${h(a.motivo)}</td><td class="peq">${h(a.admin_email || '')}</td></tr>`;
-    }).join('');
-    const histEsc = [...S.versoes].filter(v => v.vigencia_inicio > '2000-01-01').reverse().map(v => `<tr><td>${fmtData(partesLocais(v.criado_em).data)}</td>
-      <td>${h((S.escalas.find(e => e.id === v.escala_id) || {}).nome)}</td><td>${fmtData(v.vigencia_inicio)}</td>
-      <td class="num">${v.entrada.slice(0, 5)}–${v.saida.slice(0, 5)}</td><td>${h(v.motivo)}</td><td class="peq">${h(v.admin_email || '')}</td></tr>`).join('');
-    c.innerHTML = `
-      <div class="cab"><div><h1>Escalas e horários</h1><p class="mut">Jornada padrão: 8h24 trabalhadas + 1h de almoço flexível (9h24 de permanência)</p></div>
-        ${podeEditar() ? '<button class="btn" id="altFunc">Alterar horário de funcionário</button>' : ''}</div>
-      <div class="escalas">${cards}</div>
-      <div class="card"><h2>Histórico de alterações por funcionário</h2><div class="tabela-wrap"><table>
-        <thead><tr><th>Registrado em</th><th>Funcionário</th><th>Tipo</th><th>Vigência</th><th>Anterior</th><th>Novo</th><th>Motivo</th><th>Responsável</th></tr></thead>
-        <tbody>${hist || '<tr><td colspan="8" class="vazio">Nenhuma alteração registrada.</td></tr>'}</tbody></table></div></div>
-      <div class="card"><h2>Histórico de horários das escalas</h2><div class="tabela-wrap"><table>
-        <thead><tr><th>Registrado em</th><th>Escala</th><th>Vale a partir de</th><th>Horário</th><th>Motivo</th><th>Responsável</th></tr></thead>
-        <tbody>${histEsc || '<tr><td colspan="6" class="vazio">Horários originais, sem alterações.</td></tr>'}</tbody></table></div></div>`;
-    c.querySelectorAll('[data-esc]').forEach(b => b.onclick = () => formEscala(+b.dataset.esc));
-    const af = $('#altFunc'); if (af) af.onclick = () => formAlteracao();
-  };
-
-  function campoRetroativo() {
-    return `<label class="check"><input type="checkbox" name="retro"> Permitir data passada (recalcula o banco de horas desses dias; as batidas originais não mudam)</label>`;
-  }
-  async function validarHorario(ent, sai) {
-    const a = hm2min(ent), b = hm2min(sai);
-    if (a == null || b == null || b - a <= 60) throw new Error('Horário inválido: a saída precisa ser mais de 1h depois da entrada.');
-    const j = b - a - 60;
-    if (j !== JORNADA_PADRAO && !(await confirmar(`A jornada resultante será ${dur(j)} (padrão 8h24). Confirmar?`))) return false;
     return true;
   }
+  function podeEditar() { return perfil === "admin" || perfil === "gestor"; }
+  function msgHtml(t, tipo) { return t ? '<div class="msg ' + (tipo || "err") + '">' + esc(t) + "</div>" : ""; }
 
-  function formEscala(id) {
-    const e = S.escalas.find(x => x.id === id), v = versaoEscala(id, hojeLocal(), S.versoes);
-    modal(`Alterar ${e.nome}`, `
-      <p class="mut">Atual: <b>${v.entrada.slice(0, 5)}–${v.saida.slice(0, 5)}</b>. Vale para todos os funcionários desta escala, a partir da data escolhida.</p>
-      <div class="grid2"><label>Nova entrada<input type="time" name="entrada" required value="${v.entrada.slice(0, 5)}"></label>
-      <label>Nova saída<input type="time" name="saida" required value="${v.saida.slice(0, 5)}"></label></div>
-      <label>Vale a partir de<input type="date" name="inicio" required value="${hojeLocal()}"></label>
-      ${campoRetroativo()}
-      <label>Motivo<textarea name="motivo" required rows="2"></textarea></label>`,
-      {
-        onOk: async d => {
-          if (!d.motivo) throw new Error('Informe o motivo.');
-          if (d.inicio < hojeLocal() && !d.retro) throw new Error('Data no passado: marque a opção para permitir.');
-          if (!(await validarHorario(d.entrada, d.saida))) return false;
-          await gravar('escala_versoes', { escala_id: id, entrada: d.entrada, saida: d.saida, vigencia_inicio: d.inicio, motivo: d.motivo }, 'escala.alterar');
-          toast('Novo horário da escala registrado.'); await recarregar();
-        }
-      });
-  }
-
-  function formAlteracao() {
-    const o = modal('Alterar horário de funcionário', `
-      <label>Funcionário<select name="funcionario_id" required>${opcoesFunc()}</select></label>
-      <div class="grid2"><label>Tipo<select name="tipo"><option value="permanente">Permanente</option><option value="temporaria">Temporária (data específica / período)</option></select></label>
-      <label>Novo horário<select name="modo"><option value="escala">Usar uma escala</option><option value="personalizado">Horário personalizado</option></select></label></div>
-      <div data-modo="escala"><label>Escala<select name="escala_id">${opcoesEscala(1)}</select></label></div>
-      <div data-modo="personalizado" hidden class="grid2"><label>Entrada<input type="time" name="entrada"></label><label>Saída<input type="time" name="saida"></label></div>
-      <div class="grid2"><label>A partir de<input type="date" name="data_inicio" required value="${hojeLocal()}"></label>
-      <label data-temp hidden>Até (inclusive)<input type="date" name="data_fim"></label></div>
-      ${campoRetroativo()}
-      <label>Motivo<textarea name="motivo" required rows="2"></textarea></label>
-      <div class="peq mut" id="anterior"></div>`,
-      {
-        onOk: async d => {
-          const f = funcPorId(d.funcionario_id);
-          if (!d.motivo) throw new Error('Informe o motivo.');
-          if (d.data_inicio < hojeLocal() && !d.retro) throw new Error('Data no passado: marque a opção para permitir.');
-          if (d.tipo === 'temporaria' && d.data_fim && d.data_fim < d.data_inicio) throw new Error('A data final é anterior à inicial.');
-          const row = { funcionario_id: f.id, tipo: d.tipo, data_inicio: d.data_inicio, data_fim: d.tipo === 'temporaria' ? (d.data_fim || d.data_inicio) : null, motivo: d.motivo, escala_id: null, entrada: null, saida: null };
-          if (d.modo === 'personalizado') {
-            if (!(await validarHorario(d.entrada, d.saida))) return false;
-            row.entrada = d.entrada; row.saida = d.saida;
-          } else row.escala_id = +d.escala_id;
-          const ant = resolverHorario(f, d.data_inicio, S);
-          row.anterior = `${ant.escalaNome} ${min2hm(ant.entrada)}–${min2hm(ant.saida)}`;
-          await gravar('alteracoes', row, 'horario.alterar');
-          toast('Alteração registrada.'); await recarregar();
-        }
-      });
-    const sel = n => o.querySelector(`[name=${n}]`);
-    const atualizar = () => {
-      o.querySelector('[data-modo=escala]').hidden = sel('modo').value !== 'escala';
-      o.querySelector('[data-modo=personalizado]').hidden = sel('modo').value !== 'personalizado';
-      o.querySelector('[data-temp]').hidden = sel('tipo').value !== 'temporaria';
-      const f = funcPorId(sel('funcionario_id').value);
-      if (f) o.querySelector('#anterior').textContent = 'Horário vigente nessa data: ' + resolverHorario(f, sel('data_inicio').value || hojeLocal(), S).rotulo;
-    };
-    o.addEventListener('change', atualizar); atualizar();
-  }
-
-  /* ================= REGISTROS DE PONTO ================= */
-  PAG.registros = async c => {
-    const { ini, fim } = periodoAtual();
-    const fid = S.filtro.func || (S.funcionarios.find(f => f.ativo) || {}).id;
-    const f = funcPorId(fid);
-    let tabela = '<p class="vazio">Cadastre um funcionário primeiro.</p>', resumo = '';
-    if (f) {
-      const per = calcPeriodo(f, ini, fim, agrupar(await batidasPeriodo(ini, fim)));
-      tabela = `<div class="tabela-wrap"><table class="registros">
-        <thead><tr><th>Data</th><th>Horário previsto</th>${TIPOS.map(t => `<th>${TIPO_CURTO[t]}</th>`).join('')}<th>Trabalhado</th><th>Previsto</th><th>Saldo</th><th>Ocorrências</th></tr></thead>
-        <tbody>${per.dias.map(d => linhaDia(d)).join('')}</tbody></table></div>`;
-      resumo = resumoHTML(per);
+  async function buscarTudo(q) {
+    var out = [], from = 0, passo = 1000;
+    for (;;) {
+      var r = await q().range(from, from + passo - 1);
+      if (r.error) throw r.error;
+      out = out.concat(r.data);
+      if (r.data.length < passo) break;
+      from += passo;
     }
-    const tent = await DB.listar('tentativas', { order: 'momento', desc: true, limit: 40 });
-    c.innerHTML = `
-      <div class="cab"><div><h1>Registros de ponto</h1><p class="mut">Registros originais são preservados. Correções ficam marcadas como ajuste.</p></div>
-        ${podeEditar() ? '<button class="btn" id="manual">+ Batida de ajuste</button>' : ''}</div>
-      <div class="card filtros"><label>Funcionário<select id="selFunc">${opcoesFunc(fid)}</select></label>${periodoHTML(ini, fim)}</div>
-      ${resumo}
-      <div class="card">${tabela}</div>
-      <div class="card"><h2>Tentativas e ocorrências do terminal</h2><div class="tabela-wrap"><table>
-        <thead><tr><th>Quando</th><th>CPF</th><th>Funcionário</th><th>Resultado</th><th>Detalhe</th><th>Terminal</th></tr></thead>
-        <tbody>${tent.map(t => `<tr><td class="num">${fmtData(partesLocais(t.momento || t.criado_em).data)} ${partesLocais(t.momento || t.criado_em).horaSeg}</td>
-          <td class="num">${h(t.cpf_mascarado || '')}</td><td>${h((funcPorId(t.funcionario_id) || {}).nome || '—')}</td>
-          <td><span class="pill ${t.resultado === 'registrado' ? 'verde' : t.resultado === 'falha_comunicacao' ? 'amarelo' : 'vermelho'}">${h(t.resultado)}</span></td>
-          <td>${h(TIPO_LABEL[t.detalhe] || t.detalhe || '')}</td><td>${h(t.terminal || '')}</td></tr>`).join('') || '<tr><td colspan="6" class="vazio">Nenhuma tentativa.</td></tr>'}</tbody></table></div></div>`;
-    $('#selFunc').onchange = e => { S.filtro.func = e.target.value; render(); };
-    ligarPeriodo(c, render);
-    const mn = $('#manual'); if (mn) mn.onclick = () => formManual(fid);
-    c.querySelectorAll('[data-inv]').forEach(b => b.onclick = () => formInvalidar(+b.dataset.inv));
-    c.querySelectorAll('[data-info]').forEach(b => b.onclick = () => infoBatida(+b.dataset.info));
-  };
-
-  function resumoHTML(per) {
-    return `<div class="kpis tres">
-      <div class="kpi"><span>Horas extras</span><b class="pos">${dur(per.extra)}</b></div>
-      <div class="kpi"><span>Horas devidas</span><b class="neg">${dur(per.devida)}</b></div>
-      <div class="kpi destaque"><span>Saldo líquido</span><b class="${classeSaldo(per.saldo)}">${durSaldo(per.saldo)}</b><small>Trabalhado ${dur(per.trabalhado)} de ${dur(per.prevista)} previstos</small></div></div>`;
+    return out;
   }
 
-  let _batidasTela = {};
-  function celulaBatidas(d, tipo) {
-    const bs = d.todas.filter(b => b.tipo === tipo).sort((a, b) => a.momento < b.momento ? -1 : 1);
-    if (!bs.length) return '<span class="mut">—</span>';
-    return bs.map(b => {
-      _batidasTela[b.id] = b;
-      const hr = partesLocais(b.momento).hora;
-      const cls = b.invalidada ? 'bt inv' : b.origem === 'ajuste' ? 'bt aj' : 'bt';
-      return `<span class="${cls}"><button class="lnk" data-info="${b.id}" title="Detalhes">${hr}</button>${b.origem === 'ajuste' ? '<i>aj</i>' : ''}${!b.invalidada && podeEditar() ? `<button class="lnk x" data-inv="${b.id}" title="Invalidar batida">×</button>` : ''}</span>`;
-    }).join('');
-  }
-  function linhaDia(d) {
-    if (d.status === 'futuro') return `<tr class="futuro"><td>${fmtData(d.data)} <span class="mut">${DIAS_SEMANA[diaSemana(d.data)]}</span></td><td colspan="9" class="mut">—</td></tr>`;
-    const semExp = d.prevista === 0 && !d.todas.length;
-    const flags = d.flags.map(x => `<span class="pill ${['atraso', 'falta', 'batida_esquecida', 'saida_antecipada', 'almoco_excedente'].includes(x.t) ? 'vermelho' : ['he_ok'].includes(x.t) ? 'verde' : x.t === 'feriado' || x.t === 'dispensa' ? 'azul' : 'amarelo'}">${h(x.txt)}</span>`).join('');
-    const status = ['andamento', 'aguardando'].includes(d.status) ? `<span class="pill cinza">${STATUS_LABEL[d.status]}</span>` : '';
-    return `<tr class="${semExp ? 'folga' : ''}"><td>${fmtData(d.data)} <span class="mut">${DIAS_SEMANA[diaSemana(d.data)]}</span></td>
-      <td class="peq">${d.prevista ? h(d.horario.rotulo) : (d.feriado ? 'Feriado' : d.dispensa ? 'Dispensado' : 'Sem expediente')}</td>
-      ${TIPOS.map(t => `<td class="num">${celulaBatidas(d, t)}</td>`).join('')}
-      <td class="num">${d.todas.length ? dur(d.trabalhado) : '—'}</td><td class="num">${d.prevista ? dur(d.prevista) : '—'}</td>
-      <td class="num ${classeSaldo(d.saldo)}"><b>${d.saldo ? durSaldo(d.saldo) : (d.todas.length || d.prevista ? '0h00' : '—')}</b></td>
-      <td>${status}${flags}</td></tr>`;
+  function modal(html, montar) {
+    var root = $("modalRoot");
+    root.innerHTML = '<div class="modal"><div class="card">' + html + "</div></div>";
+    function fechar() { root.innerHTML = ""; }
+    root.querySelectorAll("[data-fechar]").forEach(function (b) { b.addEventListener("click", fechar); });
+    if (montar) montar(root, fechar);
+    return fechar;
   }
 
-  function infoBatida(id) {
-    const b = _batidasTela[id]; if (!b) return;
-    const p = partesLocais(b.momento);
-    modal('Detalhes da batida', `<dl class="dl">
-      <dt>Funcionário</dt><dd>${h((funcPorId(b.funcionario_id) || {}).nome)}</dd>
-      <dt>Tipo</dt><dd>${TIPO_LABEL[b.tipo]}</dd><dt>Data/hora</dt><dd>${fmtData(p.data)} ${p.horaSeg}</dd>
-      <dt>Origem</dt><dd>${b.origem === 'ajuste' ? 'Ajuste administrativo' : 'Recepção'} · método ${h(b.metodo || '')}</dd>
-      <dt>Terminal</dt><dd>${h(b.terminal || '—')}</dd>
-      ${b.origem === 'ajuste' ? `<dt>Lançado por</dt><dd>${h(b.admin_email || '')}</dd><dt>Motivo</dt><dd>${h(b.motivo || '')}</dd>` : ''}
-      ${b.invalidada ? `<dt>Invalidada</dt><dd>${h(b.invalidada.motivo)} · ${h(b.invalidada.admin_email || '')}</dd>` : ''}
-      <dt>Gravado em</dt><dd>${b.criado_em ? fmtData(partesLocais(b.criado_em).data) + ' ' + partesLocais(b.criado_em).horaSeg : '—'}</dd></dl>`);
+  /* ---------- login ---------- */
+  $("escola").textContent = C.escola;
+  $("escola2").textContent = C.escola + " — Ponto";
+
+  async function iniciarSessao() {
+    var s = await db.auth.getSession();
+    if (!s.data.session) return mostrarLogin();
+    var r = await db.rpc("meu_perfil");
+    if (r.error || !r.data) {
+      await db.auth.signOut();
+      mostrarLogin("Este usuário não tem acesso administrativo.");
+      return;
+    }
+    perfil = r.data;
+    meuEmail = s.data.session.user.email;
+    $("quem").textContent = meuEmail + " (" + perfil + ")";
+    $("loginView").classList.add("hidden");
+    $("appView").classList.remove("hidden");
+    var e = await db.from("escalas").select("id,nome").order("id");
+    var v = await db.from("escala_versoes").select("escala_id,entrada,saida,vigencia_inicio").order("vigencia_inicio");
+    escalas = (e.data || []).map(function (x) {
+      var vs = (v.data || []).filter(function (y) { return y.escala_id === x.id; });
+      var ult = vs[vs.length - 1];
+      return { id: x.id, nome: x.nome, entrada: ult ? ult.entrada.slice(0, 5) : "", saida: ult ? ult.saida.slice(0, 5) : "" };
+    });
+    var c = await db.from("configuracoes").select("*").eq("id", 1).maybeSingle();
+    if (c.data) cfg = c.data;
+    ir(aba);
+  }
+  function mostrarLogin(m) {
+    $("appView").classList.add("hidden");
+    $("loginView").classList.remove("hidden");
+    $("loginMsg").innerHTML = msgHtml(m);
+  }
+  async function entrar() {
+    $("loginMsg").innerHTML = ""; $("entrar").disabled = true;
+    var r = await db.auth.signInWithPassword({ email: $("email").value.trim(), password: $("senha").value });
+    $("entrar").disabled = false;
+    if (r.error) { $("loginMsg").innerHTML = msgHtml("E-mail ou senha incorretos."); return; }
+    $("senha").value = "";
+    iniciarSessao();
+  }
+  $("entrar").addEventListener("click", entrar);
+  $("senha").addEventListener("keydown", function (e) { if (e.key === "Enter") entrar(); });
+  $("sair").addEventListener("click", async function () { await db.auth.signOut(); perfil = null; mostrarLogin(); });
+
+  $("tabs").addEventListener("click", function (e) {
+    var t = e.target.getAttribute("data-t");
+    if (t) ir(t);
+  });
+  function ir(t) {
+    aba = t;
+    document.querySelectorAll(".tab").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-t") === t); });
+    var f = { dash: telaDash, func: telaFunc, reg: telaReg, rel: telaRel }[t];
+    $("main").innerHTML = '<p class="muted">Carregando…</p>';
+    f().catch(function (e) { $("main").innerHTML = msgHtml("Erro: " + (e.message || e)); });
   }
 
+  /* ---------- Dashboard ---------- */
+  async function telaDash() {
+    var d = hoje();
+    var f = await db.from("funcionarios").select("id,nome,escala_id").eq("ativo", true).order("nome");
+    var b = await db.from("batidas").select("id,funcionario_id,tipo,momento").eq("data", d);
+    var inv = await db.from("batidas_invalidadas").select("batida_id");
+    if (f.error || b.error) throw (f.error || b.error);
+    var invSet = {}; (inv.data || []).forEach(function (i) { invSet[i.batida_id] = 1; });
+    var por = {};
+    b.data.forEach(function (x) { if (!invSet[x.id]) { (por[x.funcionario_id] = por[x.funcionario_id] || {})[x.tipo] = x.momento; } });
+    var presentes = 0, completos = 0, ausentes = 0;
+    var linhas = f.data.map(function (p) {
+      var m = por[p.id] || {};
+      var n = Object.keys(m).length;
+      var st;
+      if (n === 0) { ausentes++; st = '<span class="tag warn">Sem batida</span>'; }
+      else if (n === 4) { completos++; st = '<span class="tag ok">Jornada completa</span>'; }
+      else { presentes++; st = '<span class="tag">Em andamento</span>'; }
+      var esc_ = escalas.filter(function (e) { return e.id === p.escala_id; })[0];
+      return "<tr><td>" + esc(p.nome) + '</td><td class="muted">' + esc(esc_ ? esc_.nome : "") + "</td>" +
+        TIPOS.map(function (t) { return "<td>" + (m[t] ? hora(m[t]) : "—") + "</td>"; }).join("") +
+        "<td>" + st + "</td></tr>";
+    }).join("");
+    $("main").innerHTML =
+      '<div class="grid">' +
+      '<div class="card kpi"><span class="muted">Funcionários ativos</span><b>' + f.data.length + "</b></div>" +
+      '<div class="card kpi"><span class="muted">Em andamento</span><b>' + presentes + "</b></div>" +
+      '<div class="card kpi"><span class="muted">Jornada completa</span><b>' + completos + "</b></div>" +
+      '<div class="card kpi"><span class="muted">Sem batida hoje</span><b>' + ausentes + "</b></div></div>" +
+      "<h3>Hoje, " + dataBR(d) + "</h3>" +
+      (f.data.length ? '<div class="scroll"><table><tr><th>Nome</th><th>Escala</th><th>Entrada</th><th>Saída almoço</th><th>Retorno</th><th>Saída</th><th>Situação</th></tr>' + linhas + "</table></div>"
+        : '<div class="card muted">Nenhum funcionário cadastrado ainda. Vá em <b>Funcionários › Novo funcionário</b>.</div>');
+  }
+
+  /* ---------- Funcionários ---------- */
+  async function telaFunc() {
+    var q = db.from("funcionarios").select("*").order("nome");
+    if (!mostrarDesligados) q = q.eq("ativo", true);
+    var r = await q;
+    if (r.error) throw r.error;
+    var linhas = r.data.map(function (p) {
+      var e = escalas.filter(function (x) { return x.id === p.escala_id; })[0];
+      var st = p.ativo ? '<span class="tag ok">Ativo</span>'
+        : '<span class="tag off">Desligado' + (p.desligamento ? " em " + dataBR(p.desligamento) : "") + "</span>";
+      var acoes = "";
+      if (podeEditar()) {
+        if (p.ativo) acoes += '<button class="btn sec sm" data-a="edit" data-id="' + p.id + '">Editar</button> <button class="btn danger sm" data-a="rem" data-id="' + p.id + '">Remover</button>';
+        else acoes += '<button class="btn sec sm" data-a="react" data-id="' + p.id + '">Reativar</button>';
+      }
+      if (perfil === "admin") acoes += ' <button class="btn sec sm" data-a="del" data-id="' + p.id + '" title="Só funciona se nunca bateu ponto">Excluir cadastro</button>';
+      return "<tr><td>" + esc(p.nome) + "</td><td>" + maskCpf(p.cpf) + "</td><td>" + esc(p.cargo || "") + "</td><td>" +
+        esc(e ? e.nome + " (" + e.entrada + ")" : "") + "</td><td>" + st + (p.motivo_desligamento ? '<br><small class="muted">' + esc(p.motivo_desligamento) + "</small>" : "") + '</td><td class="act">' + acoes + "</td></tr>";
+    }).join("");
+    $("main").innerHTML =
+      '<div class="bar"><div class="grow"><b>Funcionários</b> <span class="muted">(' + r.data.length + ")</span></div>" +
+      '<label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" id="chkDes" style="width:auto"' + (mostrarDesligados ? " checked" : "") + "> Mostrar desligados</label>" +
+      (podeEditar() ? '<button class="btn" id="novo">+ Novo funcionário</button>' : "") + "</div>" +
+      (r.data.length ? '<div class="scroll"><table><tr><th>Nome</th><th>CPF</th><th>Cargo</th><th>Escala</th><th>Situação</th><th></th></tr>' + linhas + "</table></div>"
+        : '<div class="card muted">Nenhum funcionário' + (mostrarDesligados ? "" : " ativo") + ".</div>");
+    $("chkDes").addEventListener("change", function () { mostrarDesligados = this.checked; ir("func"); });
+    if ($("novo")) $("novo").addEventListener("click", function () { formFunc(null); });
+    var porId = {}; r.data.forEach(function (p) { porId[p.id] = p; });
+    $("main").querySelectorAll("[data-a]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var p = porId[b.getAttribute("data-id")], a = b.getAttribute("data-a");
+        if (a === "edit") formFunc(p);
+        if (a === "rem") formRemover(p);
+        if (a === "react") reativar(p);
+        if (a === "del") excluir(p);
+      });
+    });
+  }
+
+  function opcoesEscala(sel) {
+    return escalas.map(function (e) {
+      return '<option value="' + e.id + '"' + (e.id === sel ? " selected" : "") + ">" + esc(e.nome) + " — " + e.entrada + " às " + e.saida + "</option>";
+    }).join("");
+  }
+
+  function formFunc(p) {
+    var novo = !p;
+    modal(
+      "<h2>" + (novo ? "Novo funcionário" : "Editar funcionário") + "</h2>" +
+      '<label>Nome completo</label><input id="fNome" value="' + esc(p ? p.nome : "") + '">' +
+      '<label>CPF</label><input id="fCpf" inputmode="numeric" maxlength="14" value="' + (p ? maskCpf(p.cpf) : "") + '"' + (novo ? "" : " disabled") + ">" +
+      '<label>Cargo</label><input id="fCargo" value="' + esc(p ? p.cargo || "" : "") + '">' +
+      '<label>Data de admissão</label><input id="fAdm" type="date" value="' + (p && p.admissao ? p.admissao : "") + '">' +
+      '<label>Escala</label><select id="fEsc">' + opcoesEscala(p ? p.escala_id : 1) + "</select>" +
+      (novo ? "" : '<div id="boxMotivo" class="hidden"><label>Motivo da troca de escala (obrigatório)</label><input id="fMot"></div>') +
+      '<div id="fMsg"></div><div class="acts"><button class="btn sec" data-fechar>Cancelar</button><button class="btn" id="fSalvar">Salvar</button></div>',
+      function (root, fechar) {
+        var cpfEl = root.querySelector("#fCpf");
+        cpfEl.addEventListener("input", function () { if (!cpfEl.disabled) cpfEl.value = maskCpf(cpfEl.value.replace(/\D/g, "").slice(0, 11)).replace(/[.-]$/, ""); });
+        if (!novo) root.querySelector("#fEsc").addEventListener("change", function () {
+          root.querySelector("#boxMotivo").classList.toggle("hidden", Number(this.value) === p.escala_id);
+        });
+        root.querySelector("#fSalvar").addEventListener("click", async function () {
+          var nome = root.querySelector("#fNome").value.trim();
+          var cpf = cpfEl.value.replace(/\D/g, "");
+          var m = root.querySelector("#fMsg");
+          if (nome.length < 3) { m.innerHTML = msgHtml("Digite o nome completo."); return; }
+          if (novo && !cpfValido(cpf)) { m.innerHTML = msgHtml("CPF inválido."); return; }
+          var esc_id = Number(root.querySelector("#fEsc").value);
+          var dados = { nome: nome, cargo: root.querySelector("#fCargo").value.trim() || null, admissao: root.querySelector("#fAdm").value || null, escala_id: esc_id };
+          this.disabled = true;
+          var r;
+          if (novo) {
+            dados.cpf = cpf;
+            r = await db.from("funcionarios").insert(dados).select().single();
+            if (!r.error) await db.from("auditoria").insert({ acao: "funcionario.criar", detalhe: { id: r.data.id, nome: nome } });
+          } else {
+            var mot = (root.querySelector("#fMot") || {}).value || "";
+            if (esc_id !== p.escala_id && mot.trim().length < 3) { m.innerHTML = msgHtml("Informe o motivo da troca de escala."); this.disabled = false; return; }
+            r = await db.from("funcionarios").update(dados).eq("id", p.id);
+            if (!r.error && esc_id !== p.escala_id) {
+              var ant = escalas.filter(function (x) { return x.id === p.escala_id; })[0];
+              await db.from("alteracoes").insert({ funcionario_id: p.id, tipo: "permanente", data_inicio: hoje(), escala_id: esc_id, anterior: ant ? ant.nome : String(p.escala_id), motivo: mot.trim() });
+            }
+            if (!r.error) await db.from("auditoria").insert({ acao: "funcionario.editar", detalhe: { id: p.id, nome: nome } });
+          }
+          this.disabled = false;
+          if (r.error) {
+            m.innerHTML = msgHtml(r.error.code === "23505" ? "Já existe um funcionário com este CPF (pode estar desligado: use Mostrar desligados › Reativar)." : "Erro: " + r.error.message);
+            return;
+          }
+          fechar(); ir("func");
+        });
+      });
+  }
+
+  function formRemover(p) {
+    modal(
+      "<h2>Remover funcionário</h2>" +
+      "<p><b>" + esc(p.nome) + "</b> deixará de bater ponto. O histórico e os relatórios dele continuam guardados, e dá para reativar depois.</p>" +
+      '<label>Data do desligamento</label><input id="rData" type="date" value="' + hoje() + '">' +
+      '<label>Motivo (opcional)</label><input id="rMot" placeholder="Ex.: pedido de demissão">' +
+      '<div id="rMsg"></div><div class="acts"><button class="btn sec" data-fechar>Cancelar</button><button class="btn danger" id="rOk">Confirmar remoção</button></div>',
+      function (root, fechar) {
+        root.querySelector("#rOk").addEventListener("click", async function () {
+          this.disabled = true;
+          var r = await db.rpc("desligar_funcionario", { p_id: p.id, p_data: root.querySelector("#rData").value || null, p_motivo: root.querySelector("#rMot").value });
+          this.disabled = false;
+          if (r.error || !r.data || !r.data.ok) { root.querySelector("#rMsg").innerHTML = msgHtml((r.data && r.data.erro) || (r.error && r.error.message) || "Erro."); return; }
+          fechar(); ir("func");
+        });
+      });
+  }
+
+  async function reativar(p) {
+    if (!confirm("Reativar " + p.nome + "? Ele voltará a bater ponto.")) return;
+    var r = await db.rpc("reativar_funcionario", { p_id: p.id });
+    if (r.error || !r.data || !r.data.ok) { alert((r.data && r.data.erro) || (r.error && r.error.message)); return; }
+    ir("func");
+  }
+  async function excluir(p) {
+    if (!confirm("Excluir o cadastro de " + p.nome + " definitivamente?\n\nIsso só é permitido se a pessoa nunca bateu ponto. Para quem já trabalhou, use Remover.")) return;
+    var r = await db.rpc("excluir_funcionario", { p_id: p.id });
+    if (r.error || !r.data || !r.data.ok) { alert((r.data && r.data.erro) || (r.error && r.error.message)); return; }
+    ir("func");
+  }
+
+  /* ---------- Registros ---------- */
+  var regData = null;
+  async function telaReg() {
+    regData = regData || hoje();
+    var b = await db.from("batidas").select("*").eq("data", regData).order("momento");
+    var f = await db.from("funcionarios").select("id,nome").order("nome");
+    var inv = await db.from("batidas_invalidadas").select("*");
+    if (b.error || f.error) throw (b.error || f.error);
+    var nomes = {}; f.data.forEach(function (x) { nomes[x.id] = x.nome; });
+    var invMap = {}; (inv.data || []).forEach(function (i) { invMap[i.batida_id] = i; });
+    var linhas = b.data.map(function (x) {
+      var i = invMap[x.id];
+      return "<tr" + (i ? ' style="opacity:.55"' : "") + "><td>" + esc(nomes[x.funcionario_id] || "?") + "</td><td>" + NOMES[x.tipo] + "</td><td>" + hora(x.momento) + "</td><td>" +
+        (x.origem === "ajuste" ? '<span class="tag warn">Ajuste</span>' : '<span class="tag">Recepção</span>') + "</td><td>" +
+        (i ? '<span class="tag err">Invalidada</span><br><small>' + esc(i.motivo) + "</small>" : (x.motivo ? "<small>" + esc(x.motivo) + "</small>" : "")) + '</td><td class="act">' +
+        (podeEditar() && !i ? '<button class="btn sec sm" data-inv="' + x.id + '">Invalidar</button>' : "") + "</td></tr>";
+    }).join("");
+    $("main").innerHTML =
+      '<div class="bar"><div class="grow"><b>Registros de ponto</b></div><input type="date" id="rgD" value="' + regData + '" style="width:auto">' +
+      (podeEditar() ? '<button class="btn" id="rgAj">+ Lançar batida de ajuste</button>' : "") + "</div>" +
+      (b.data.length ? '<div class="scroll"><table><tr><th>Funcionário</th><th>Tipo</th><th>Hora</th><th>Origem</th><th>Observação</th><th></th></tr>' + linhas + "</table></div>"
+        : '<div class="card muted">Nenhuma batida em ' + dataBR(regData) + ".</div>") +
+      '<p class="muted" style="font-size:.85rem">Batidas não são editadas nem apagadas. Para corrigir, invalide a batida com motivo e lance uma de ajuste.</p>';
+    $("rgD").addEventListener("change", function () { regData = this.value || hoje(); ir("reg"); });
+    if ($("rgAj")) $("rgAj").addEventListener("click", function () { formAjuste(f.data); });
+    $("main").querySelectorAll("[data-inv]").forEach(function (bt) {
+      bt.addEventListener("click", function () { formInvalidar(Number(bt.getAttribute("data-inv"))); });
+    });
+  }
   function formInvalidar(id) {
-    const b = _batidasTela[id];
-    modal('Invalidar batida', `<div class="alerta aviso">A batida de <b>${TIPO_LABEL[b.tipo]}</b> às <b>${partesLocais(b.momento).horaSeg}</b> continuará gravada (riscada) e deixará de contar no cálculo.</div>
-      <label>Motivo<textarea name="motivo" required rows="2"></textarea></label>`,
-      {
-        ok: 'Invalidar', onOk: async d => {
-          if (!d.motivo) throw new Error('Informe o motivo.');
-          await gravar('batidas_invalidadas', { batida_id: id, motivo: d.motivo }, 'batida.invalidar');
-          toast('Batida invalidada.'); await recarregar();
-        }
+    modal("<h2>Invalidar batida</h2><label>Motivo (obrigatório)</label><input id=\"iMot\"><div id=\"iMsg\"></div>" +
+      '<div class="acts"><button class="btn sec" data-fechar>Cancelar</button><button class="btn danger" id="iOk">Invalidar</button></div>',
+      function (root, fechar) {
+        root.querySelector("#iOk").addEventListener("click", async function () {
+          var mot = root.querySelector("#iMot").value.trim();
+          if (mot.length < 3) { root.querySelector("#iMsg").innerHTML = msgHtml("Informe o motivo."); return; }
+          var r = await db.from("batidas_invalidadas").insert({ batida_id: id, motivo: mot });
+          if (r.error) { root.querySelector("#iMsg").innerHTML = msgHtml(r.error.message); return; }
+          await db.from("auditoria").insert({ acao: "batida.invalidar", detalhe: { batida_id: id, motivo: mot } });
+          fechar(); ir("reg");
+        });
+      });
+  }
+  function formAjuste(funcs) {
+    modal("<h2>Lançar batida de ajuste</h2>" +
+      '<label>Funcionário</label><select id="aF">' + funcs.map(function (x) { return '<option value="' + x.id + '">' + esc(x.nome) + "</option>"; }).join("") + "</select>" +
+      '<label>Tipo</label><select id="aT">' + TIPOS.map(function (t) { return '<option value="' + t + '">' + NOMES[t] + "</option>"; }).join("") + "</select>" +
+      '<div class="row2"><div><label>Data</label><input type="date" id="aD" value="' + regData + '"></div><div><label>Hora</label><input type="time" id="aH"></div></div>' +
+      '<label>Motivo (obrigatório)</label><input id="aM"><div id="aMsg"></div>' +
+      '<div class="acts"><button class="btn sec" data-fechar>Cancelar</button><button class="btn" id="aOk">Lançar</button></div>',
+      function (root, fechar) {
+        root.querySelector("#aOk").addEventListener("click", async function () {
+          var d = root.querySelector("#aD").value, h = root.querySelector("#aH").value, mot = root.querySelector("#aM").value.trim();
+          if (!d || !h || mot.length < 3) { root.querySelector("#aMsg").innerHTML = msgHtml("Preencha data, hora e motivo."); return; }
+          var r = await db.from("batidas").insert({
+            funcionario_id: Number(root.querySelector("#aF").value), tipo: root.querySelector("#aT").value,
+            data: d, momento: d + "T" + h + ":00-03:00", origem: "ajuste", metodo: "ajuste", motivo: mot
+          });
+          if (r.error) { root.querySelector("#aMsg").innerHTML = msgHtml(r.error.message); return; }
+          regData = d; fechar(); ir("reg");
+        });
       });
   }
 
-  function formManual(fid) {
-    modal('Batida de ajuste', `
-      <div class="alerta info">Use para batidas esquecidas ou corrigidas. Fica marcada como <b>ajuste</b>, com seu usuário e o motivo.</div>
-      <label>Funcionário<select name="funcionario_id">${opcoesFunc(fid)}</select></label>
-      <div class="grid3"><label>Data<input type="date" name="data" required value="${hojeLocal()}"></label>
-      <label>Tipo<select name="tipo">${TIPOS.map(t => `<option value="${t}">${TIPO_LABEL[t]}</option>`).join('')}</select></label>
-      <label>Hora<input type="time" name="hora" required></label></div>
-      <label>Motivo<textarea name="motivo" required rows="2" placeholder="Ex.: esqueceu de registrar o retorno do almoço, confirmado pela coordenação"></textarea></label>`,
-      {
-        ok: 'Lançar ajuste', onOk: async d => {
-          if (!d.motivo || !d.hora) throw new Error('Preencha hora e motivo.');
-          if (d.data > hojeLocal()) throw new Error('Não é possível lançar batida no futuro.');
-          const ex = await DB.listar('batidas', { eq: { funcionario_id: +d.funcionario_id, data: d.data, tipo: d.tipo } });
-          const inv = new Set(S.invalidadas.map(i => i.batida_id));
-          if (ex.some(b => !inv.has(b.id))) throw new Error(`Já existe ${TIPO_LABEL[d.tipo]} válida nesse dia. Invalide-a antes (botão × na batida).`);
-          await gravar('batidas', { funcionario_id: +d.funcionario_id, tipo: d.tipo, data: d.data, momento: isoLocal(d.data, d.hora), origem: 'ajuste', metodo: 'manual', terminal: 'ADMIN', motivo: d.motivo }, 'batida.ajuste');
-          toast('Batida de ajuste lançada.'); await recarregar();
-        }
-      });
+  /* ---------- Relatórios ---------- */
+  async function telaRel() {
+    var f = await db.from("funcionarios").select("id,nome,cpf,cargo,admissao,ativo,desligamento").order("nome");
+    if (f.error) throw f.error;
+    var mes = hoje().slice(0, 7);
+    $("main").innerHTML =
+      '<div class="bar"><div class="grow"><b>Relatórios</b></div>' +
+      '<input type="month" id="rM" value="' + mes + '" style="width:auto">' +
+      '<select id="rF" style="width:auto;max-width:260px"><option value="0">Todos (consolidado)</option>' +
+      f.data.map(function (x) { return '<option value="' + x.id + '">' + esc(x.nome) + (x.ativo ? "" : " (desligado)") + "</option>"; }).join("") + "</select>" +
+      '<button class="btn" id="rG">Gerar</button><button class="btn sec hidden" id="rP">Imprimir / PDF</button></div>' +
+      '<div id="rOut"></div>';
+    $("rG").addEventListener("click", function () { gerar(f.data); });
+    $("rP").addEventListener("click", function () { window.print(); });
   }
 
-  /* ================= BANCO DE HORAS ================= */
-  PAG.banco = async c => {
-    const { ini, fim } = periodoAtual();
-    const g = agrupar(await batidasPeriodo(ini, fim));
-    const pers = S.funcionarios.filter(f => f.ativo).map(f => calcPeriodo(f, ini, fim, g));
-    const T = pers.reduce((t, p) => ({ extra: t.extra + p.extra, devida: t.devida + p.devida, trabalhado: t.trabalhado + p.trabalhado, prevista: t.prevista + p.prevista }), { extra: 0, devida: 0, trabalhado: 0, prevista: 0 });
-    T.saldo = T.extra - T.devida;
-    c.innerHTML = `
-      <div class="cab"><div><h1>Banco de horas</h1><p class="mut">${fmtData(ini)} a ${fmtData(fim)} · extras e devidas sempre separadas, sem compensação escondida</p></div></div>
-      <div class="card filtros">${periodoHTML(ini, fim)}</div>
-      ${resumoHTML(T)}
-      <div class="card"><div class="tabela-wrap"><table>
-        <thead><tr><th>Funcionário</th><th>Horário vigente</th><th>Dias previstos</th><th>Trabalhado</th><th>Previsto</th><th>Horas extras</th><th>Horas devidas</th><th>Saldo líquido</th><th></th></tr></thead>
-        <tbody>${pers.map(p => `<tr><td><b>${h(p.func.nome)}</b></td><td class="peq">${h(resolverHorario(p.func, fim < hojeLocal() ? fim : hojeLocal(), S).rotulo)}</td>
-          <td class="num">${p.dias.filter(d => d.prevista > 0 && d.status !== 'futuro').length}</td>
-          <td class="num">${dur(p.trabalhado)}</td><td class="num">${dur(p.prevista)}</td>
-          <td class="num pos">${dur(p.extra)}</td><td class="num neg">${dur(p.devida)}</td>
-          <td class="num ${classeSaldo(p.saldo)}"><b>${durSaldo(p.saldo)}</b></td>
-          <td><button class="btn sec peq" data-ver="${p.func.id}">Ver dias</button></td></tr>`).join('')}</tbody>
-        <tfoot><tr><td colspan="3"><b>Total</b></td><td class="num">${dur(T.trabalhado)}</td><td class="num">${dur(T.prevista)}</td>
-          <td class="num pos"><b>${dur(T.extra)}</b></td><td class="num neg"><b>${dur(T.devida)}</b></td><td class="num ${classeSaldo(T.saldo)}"><b>${durSaldo(T.saldo)}</b></td><td></td></tr></tfoot>
-      </table></div></div>`;
-    ligarPeriodo(c, render);
-    c.querySelectorAll('[data-ver]').forEach(b => b.onclick = () => { S.filtro.func = b.dataset.ver; ir('registros'); });
-  };
+  function diasDoMes(ym) {
+    var p = ym.split("-"), ano = Number(p[0]), m = Number(p[1]);
+    var n = new Date(ano, m, 0).getDate(), out = [];
+    for (var d = 1; d <= n; d++) out.push(ym + "-" + String(d).padStart(2, "0"));
+    return out;
+  }
+  function minutosDia(m) {
+    var t = {}; m.forEach(function (x) { t[x.tipo] = new Date(x.momento).getTime(); });
+    var tot = 0;
+    if (t.entrada && t.almoco_saida) tot += (t.almoco_saida - t.entrada) / 60000;
+    if (t.almoco_retorno && t.saida) tot += (t.saida - t.almoco_retorno) / 60000;
+    if (t.entrada && t.saida && !t.almoco_saida && !t.almoco_retorno) tot += (t.saida - t.entrada) / 60000;
+    return tot;
+  }
 
-  /* ================= OCORRÊNCIAS ================= */
-  PAG.ocorrencias = async c => {
-    const { ini, fim } = periodoAtual();
-    const g = agrupar(await batidasPeriodo(ini, fim));
-    const auto = [];
-    for (const f of S.funcionarios.filter(x => x.ativo)) {
-      for (const d of calcPeriodo(f, ini, fim, g).dias)
-        for (const fl of d.flags) if (['atraso', 'falta', 'saida_antecipada', 'almoco_excedente', 'batida_esquecida', 'sem_almoco'].includes(fl.t)) auto.push({ f, d, fl });
+  async function gerar(funcs) {
+    var ym = $("rM").value, fid = Number($("rF").value);
+    if (!ym) return;
+    $("rOut").innerHTML = '<p class="muted">Calculando…</p>';
+    var dias = diasDoMes(ym), ini = dias[0], fim = dias[dias.length - 1];
+    var bs = await buscarTudo(function () { return db.from("batidas").select("id,funcionario_id,tipo,data,momento").gte("data", ini).lte("data", fim).order("momento"); });
+    var inv = await buscarTudo(function () { return db.from("batidas_invalidadas").select("batida_id"); });
+    var fer = await db.from("feriados").select("data,descricao").gte("data", ini).lte("data", fim);
+    var invSet = {}; inv.forEach(function (i) { invSet[i.batida_id] = 1; });
+    var ferMap = {}; (fer.data || []).forEach(function (x) { ferMap[x.data] = x.descricao; });
+    var h = hoje(), tol = cfg.tolerancia_min || 0, uteis = cfg.dias_uteis || [1, 2, 3, 4, 5];
+    var lista = fid ? funcs.filter(function (x) { return x.id === fid; }) : funcs;
+
+    var resultados = lista.map(function (p) {
+      var meus = bs.filter(function (b) { return b.funcionario_id === p.id && !invSet[b.id]; });
+      var res = { p: p, dias: [], trab: 0, extra: 0, dev: 0, faltas: 0, diasTrab: 0 };
+      dias.forEach(function (d) {
+        if (d > h) return;
+        if (p.admissao && d < p.admissao) return;
+        if (p.desligamento && d > p.desligamento) return;
+        var dow = new Date(d + "T12:00:00").getDay();
+        var util = uteis.indexOf(dow) >= 0 && !ferMap[d];
+        var bd = meus.filter(function (b) { return b.data === d; });
+        var trab = minutosDia(bd), completo = bd.length >= 4 || (bd.length >= 2 && trab > 0);
+        var extra = 0, dev = 0, obs = ferMap[d] || (util ? "" : "Não útil");
+        if (bd.length === 0) {
+          if (util) { dev = C.jornadaMin; res.faltas++; obs = "Falta"; }
+        } else {
+          res.diasTrab++;
+          if (!completo) { obs = d === h ? "Em andamento" : "Batidas incompletas"; }
+          else {
+            var diff = util ? trab - C.jornadaMin : trab;
+            if (Math.abs(diff) <= tol && util) diff = 0;
+            if (diff > 0) extra = diff; else dev = -diff;
+          }
+        }
+        res.trab += trab; res.extra += extra; res.dev += dev;
+        res.dias.push({ d: d, bd: bd, trab: trab, extra: extra, dev: dev, obs: obs });
+      });
+      return res;
+    });
+
+    var cab = '<div class="printonly"><h2>' + esc(C.escola) + " — Relatório de ponto</h2></div>";
+    var html = cab + "<p class=\"muted\">Período: " + dataBR(ini) + " a " + dataBR(fim) + " · Jornada: " + hm(C.jornadaMin) + " · Tolerância: " + tol + " min</p>";
+    if (!fid) {
+      html += '<div class="scroll"><table><tr><th>Funcionário</th><th>Dias trabalhados</th><th>Horas trabalhadas</th><th>Extras</th><th>Devidas</th><th>Faltas</th><th>Saldo</th></tr>' +
+        resultados.map(function (r) {
+          var s = r.extra - r.dev;
+          return "<tr><td>" + esc(r.p.nome) + (r.p.ativo ? "" : ' <span class="tag off">desligado</span>') + "</td><td>" + r.diasTrab + "</td><td>" + hm(r.trab) + "</td><td class=\"pos\">" + hm(r.extra) + "</td><td class=\"neg\">" + hm(r.dev) + "</td><td>" + r.faltas + "</td><td class=\"" + (s < 0 ? "neg" : "pos") + "\">" + hm(s) + "</td></tr>";
+        }).join("") + "</table></div>";
+    } else {
+      var r = resultados[0], s = r.extra - r.dev;
+      html += "<h3>" + esc(r.p.nome) + " <small class=\"muted\">CPF " + maskCpf(r.p.cpf) + (r.p.cargo ? " · " + esc(r.p.cargo) : "") + "</small></h3>" +
+        '<div class="scroll"><table><tr><th>Data</th><th>Entrada</th><th>Saída almoço</th><th>Retorno</th><th>Saída</th><th>Trabalhado</th><th>Extra</th><th>Devido</th><th>Obs.</th></tr>' +
+        r.dias.map(function (x) {
+          var m = {}; x.bd.forEach(function (b) { m[b.tipo] = b.momento; });
+          return "<tr><td>" + dataBR(x.d) + "</td>" + TIPOS.map(function (t) { return "<td>" + (m[t] ? hora(m[t]) : "") + "</td>"; }).join("") +
+            "<td>" + (x.trab ? hm(x.trab) : "") + "</td><td class=\"pos\">" + (x.extra ? hm(x.extra) : "") + "</td><td class=\"neg\">" + (x.dev ? hm(x.dev) : "") + "</td><td>" + esc(x.obs) + "</td></tr>";
+        }).join("") + "</table></div>" +
+        '<p><b>Totais:</b> trabalhadas ' + hm(r.trab) + " · extras " + hm(r.extra) + " · devidas " + hm(r.dev) + " · faltas " + r.faltas + " · <b>saldo " + hm(s) + "</b></p>";
     }
-    const pend = S.ocorrencias.filter(o => o.status === 'pendente');
-    const dec = S.ocorrencias.filter(o => o.status !== 'pendente' && o.data_inicio <= fim && (o.data_fim || o.data_inicio) >= ini).reverse();
-    const linhaOc = (o, acoes) => `<tr><td>${h((funcPorId(o.funcionario_id) || {}).nome)}</td><td>${h(OCORRENCIA_TIPOS[o.tipo] || o.tipo)}${o.minutos ? ` · ${dur(+o.minutos)}` : ''}</td>
-      <td class="num">${fmtData(o.data_inicio)}${o.data_fim && o.data_fim !== o.data_inicio ? ' a ' + fmtData(o.data_fim) : ''}</td><td>${h(o.descricao || '')}</td>
-      <td class="peq">${h(o.admin_email || '')}</td>
-      <td>${acoes ? (podeEditar() ? `<button class="btn verde peq" data-ap="${o.id}">Aprovar</button> <button class="btn vermelho peq" data-rj="${o.id}">Rejeitar</button>` : '<span class="pill amarelo">Pendente</span>')
-        : `<span class="pill ${o.status === 'aprovada' ? 'verde' : 'vermelho'}">${o.status === 'aprovada' ? 'Aprovada' : 'Rejeitada'}</span> <span class="peq mut">${h(o.decidido_por || '')}</span>`}</td></tr>`;
-    c.innerHTML = `
-      <div class="cab"><div><h1>Ocorrências</h1><p class="mut">Justificativas, abonos, férias, afastamentos e HE autorizadas só afetam o cálculo depois de aprovadas.</p></div>
-        ${podeEditar() ? '<button class="btn" id="novaOc">+ Nova ocorrência</button>' : ''}</div>
-      <div class="card"><h2>Pendentes de aprovação <span class="pill amarelo">${pend.length}</span></h2><div class="tabela-wrap"><table>
-        <thead><tr><th>Funcionário</th><th>Tipo</th><th>Período</th><th>Descrição</th><th>Lançado por</th><th></th></tr></thead>
-        <tbody>${pend.map(o => linhaOc(o, true)).join('') || '<tr><td colspan="6" class="vazio">Nada pendente.</td></tr>'}</tbody></table></div></div>
-      <div class="card filtros">${periodoHTML(ini, fim)}</div>
-      <div class="card"><h2>Detectadas automaticamente no período <span class="pill cinza">${auto.length}</span></h2><div class="tabela-wrap"><table>
-        <thead><tr><th>Data</th><th>Funcionário</th><th>Ocorrência</th><th></th></tr></thead>
-        <tbody>${auto.map((a, i) => `<tr><td class="num">${fmtData(a.d.data)} <span class="mut">${DIAS_SEMANA[diaSemana(a.d.data)]}</span></td><td>${h(a.f.nome)}</td>
-          <td><span class="pill vermelho">${h(a.fl.txt)}</span></td>
-          <td>${podeEditar() ? `<button class="btn sec peq" data-just="${i}">Justificar / abonar</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="4" class="vazio">Nenhuma irregularidade no período.</td></tr>'}</tbody></table></div></div>
-      <div class="card"><h2>Decididas no período</h2><div class="tabela-wrap"><table>
-        <thead><tr><th>Funcionário</th><th>Tipo</th><th>Período</th><th>Descrição</th><th>Lançado por</th><th>Situação</th></tr></thead>
-        <tbody>${dec.map(o => linhaOc(o, false)).join('') || '<tr><td colspan="6" class="vazio">Nenhuma.</td></tr>'}</tbody></table></div></div>`;
-    ligarPeriodo(c, render);
-    const nv = $('#novaOc'); if (nv) nv.onclick = () => formOcorrencia();
-    c.querySelectorAll('[data-just]').forEach(b => b.onclick = () => {
-      const a = auto[+b.dataset.just];
-      const tipo = a.fl.t === 'falta' ? 'justificativa' : 'abono_parcial';
-      formOcorrencia({ funcionario_id: a.f.id, tipo, data_inicio: a.d.data, minutos: a.fl.min || '', descricao: a.fl.txt + ' — ' });
-    });
-    c.querySelectorAll('[data-ap]').forEach(b => b.onclick = () => decidir(+b.dataset.ap, 'aprovada'));
-    c.querySelectorAll('[data-rj]').forEach(b => b.onclick = () => decidir(+b.dataset.rj, 'rejeitada'));
-  };
-
-  function formOcorrencia(pre = {}) {
-    const o = modal('Nova ocorrência', `
-      <label>Funcionário<select name="funcionario_id">${opcoesFunc(pre.funcionario_id)}</select></label>
-      <label>Tipo<select name="tipo">${Object.entries(OCORRENCIA_TIPOS).map(([k, v]) => `<option value="${k}" ${k === pre.tipo ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
-      <div class="grid2"><label>De<input type="date" name="data_inicio" required value="${pre.data_inicio || hojeLocal()}"></label>
-      <label>Até<input type="date" name="data_fim" value="${pre.data_fim || pre.data_inicio || ''}"></label></div>
-      <label data-min>Minutos (abono parcial / HE autorizada)<input type="number" name="minutos" min="0" max="600" value="${pre.minutos || ''}"></label>
-      <label>Descrição / justificativa<textarea name="descricao" rows="3" required>${h(pre.descricao || '')}</textarea></label>
-      <p class="peq mut">Entra como <b>pendente</b>. Abonos, férias e afastamentos só alteram o banco de horas depois de aprovados.</p>`,
-      {
-        onOk: async d => {
-          if (!d.descricao) throw new Error('Descreva a ocorrência.');
-          if (d.data_fim && d.data_fim < d.data_inicio) throw new Error('Data final anterior à inicial.');
-          if (d.tipo === 'abono_parcial' && !(+d.minutos > 0)) throw new Error('Informe os minutos do abono parcial.');
-          await gravar('ocorrencias', { funcionario_id: +d.funcionario_id, tipo: d.tipo, data_inicio: d.data_inicio, data_fim: d.data_fim || d.data_inicio, minutos: d.minutos ? +d.minutos : null, descricao: d.descricao, status: 'pendente' }, 'ocorrencia.criar');
-          toast('Ocorrência registrada como pendente.'); await recarregar();
-        }
-      });
-    const t = o.querySelector('[name=tipo]');
-    const upd = () => { o.querySelector('[data-min]').hidden = !['abono_parcial', 'he_autorizada'].includes(t.value); };
-    t.onchange = upd; upd();
+    html += '<p class="muted" style="font-size:.8rem">Controle interno, não é registro de ponto homologado (Portaria MTP 671/2021). Ocorrências e abonos ainda não são considerados neste cálculo.</p>';
+    $("rOut").innerHTML = html;
+    $("rP").classList.remove("hidden");
   }
 
-  async function decidir(id, status) {
-    const oc = S.ocorrencias.find(o => o.id === id);
-    if (!(await confirmar(`${status === 'aprovada' ? 'Aprovar' : 'Rejeitar'} "${OCORRENCIA_TIPOS[oc.tipo]}" de ${(funcPorId(oc.funcionario_id) || {}).nome}?`, status === 'aprovada' ? 'Aprovar' : 'Rejeitar'))) return;
-    try {
-      await DB.atualizar('ocorrencias', 'id', id, { status, decidido_por: S.sessao.email, decidido_em: new Date().toISOString() });
-      await auditar('ocorrencia.' + status, { id, tipo: oc.tipo, funcionario_id: oc.funcionario_id });
-      toast('Ocorrência ' + status + '.'); await recarregar();
-    } catch (e) { toast(msgErro(e), 'erro'); }
-  }
-
-  /* ================= RELATÓRIOS ================= */
-  PAG.relatorios = async c => {
-    const mes = S.filtro.mes || hojeLocal().slice(0, 7);
-    c.innerHTML = `
-      <div class="cab"><div><h1>Relatórios</h1><p class="mut">PDF com CPF parcialmente mascarado</p></div></div>
-      <div class="card filtros">
-        <label>Mês<input type="month" id="rMes" value="${mes}"></label>
-        <label>Funcionário<select id="rFunc">${opcoesFunc('', true)}</select></label>
-      </div>
-      <div class="relat">
-        <div class="card"><h2>Relatório individual</h2><p class="mut">Registros diários, horas trabalhadas, extras, devidas, saldo líquido, faltas e justificativas. Com "Todos", gera um PDF com uma seção por funcionário.</p>
-          <button class="btn" id="pdfInd">Gerar PDF individual</button></div>
-        <div class="card"><h2>Relatório geral consolidado</h2><p class="mut">Todos os funcionários com resumo individual, total de extras, devidas e saldo de cada um.</p>
-          <button class="btn" id="pdfGer">Gerar PDF consolidado</button></div>
-      </div>
-      <p class="peq mut">Os relatórios são de controle interno e trazem esse aviso no rodapé. Não substituem o espelho de ponto de um REP homologado.</p>`;
-    const pegar = () => { const m = $('#rMes').value; if (!m) throw new Error('Escolha o mês.'); S.filtro.mes = m; return { ini: m + '-01', fim: fimMes(m + '-01'), fid: $('#rFunc').value }; };
-    $('#pdfInd').onclick = async () => { try { const p = pegar(); await Relatorios.individual(p.ini, p.fim, p.fid); } catch (e) { toast(msgErro(e), 'erro'); } };
-    $('#pdfGer').onclick = async () => { try { const p = pegar(); await Relatorios.geral(p.ini, p.fim); } catch (e) { toast(msgErro(e), 'erro'); } };
-  };
-
-  /* ================= CONFIGURAÇÕES ================= */
-  PAG.config = async c => {
-    const cf = S.config;
-    const admins = await DB.listar('admins').catch(() => []);
-    c.innerHTML = `
-      <div class="cab"><div><h1>Configurações</h1><p class="mut">${h(cfg.ESCOLA)} · ${DB.modo === 'demo' ? 'modo demonstração' : 'Supabase'} · ${h(Bio.descricao)}</p></div></div>
-      <div class="grid-config">
-      <form class="card" id="fRegras"><h2>Regras de cálculo</h2>
-        <label>Tolerância para atraso / saída antecipada / almoço (minutos)<input type="number" name="tol" min="0" max="30" value="${cf.tolerancia_min ?? 5}"></label>
-        <label class="check"><input type="checkbox" name="clt" ${cf.tolerancia_clt ? 'checked' : ''}> Desconsiderar no saldo variações de até 10 min/dia (CLT art. 58 §1º)</label>
-        <fieldset><legend>Dias de expediente</legend>${DIAS_SEMANA.map((n, i) => `<label class="check inline"><input type="checkbox" name="d${i}" ${cf.dias_uteis.includes(i) ? 'checked' : ''}> ${n}</label>`).join('')}</fieldset>
-        ${ehAdmin() ? '<button class="btn">Salvar regras</button>' : '<p class="peq mut">Somente o perfil admin altera as regras.</p>'}
-      </form>
-      <div class="card"><h2>Feriados e recessos</h2>
-        ${ehAdmin() ? `<form id="fFer" class="linha"><input type="date" name="data" required><input name="descricao" placeholder="Descrição" required><button class="btn peq">Adicionar</button></form>` : ''}
-        <div class="lista-fer">${S.feriados.map(f => `<div><span class="num">${fmtData(f.data)} <span class="mut">${DIAS_SEMANA[diaSemana(f.data)]}</span></span> ${h(f.descricao)} ${ehAdmin() ? `<button class="lnk x" data-rf="${f.data}">×</button>` : ''}</div>`).join('') || '<p class="vazio">Nenhum feriado.</p>'}</div>
-        <p class="peq mut">Inclua os feriados municipais e o calendário de recesso da escola.</p></div>
-      <div class="card"><h2>Usuários administrativos</h2>
-        <table><thead><tr><th>E-mail</th><th>Nome</th><th>Perfil</th></tr></thead><tbody>${admins.map(a => `<tr><td>${h(a.email)}</td><td>${h(a.nome || '')}</td><td><span class="pill">${h(a.perfil)}</span></td></tr>`).join('')}</tbody></table>
-        <p class="peq mut"><b>admin</b>: tudo · <b>gestor</b>: funcionários, horários, ajustes e aprovações · <b>consulta</b>: só visualiza e gera relatórios.<br>Novos usuários: crie em Supabase › Authentication e cadastre na tabela <code>admins</code> (passo a passo no LEIA-ME).</p></div>
-      <div class="card"><h2>Backup</h2><p class="mut">Baixa todas as tabelas em um arquivo JSON. Faça pelo menos uma vez por mês e guarde fora deste computador.</p>
-        <button class="btn sec" id="bkp">Baixar backup completo</button>
-        ${DB.modo === 'demo' ? '<hr><button class="btn vermelho peq" id="reset">Apagar dados da demonstração</button>' : ''}</div>
-      <div class="card aviso-legal"><h2>Conformidade</h2><p class="peq">Este sistema é de <b>controle interno</b>. Não é um REP-P homologado nos termos da Portaria MTP nº 671/2021; para uso como registro oficial é preciso avaliar e cumprir esses requisitos (comprovante ao trabalhador, AFD/AEJ, assinatura eletrônica, registro do programa no INPI, entre outros). Dados pessoais e biométricos seguem a LGPD: acesso restrito por perfil, CPF mascarado nos relatórios e digitais guardadas somente localmente.</p></div>
-      </div>`;
-    const fr = $('#fRegras');
-    fr.onsubmit = async e => {
-      e.preventDefault(); if (!ehAdmin()) return;
-      const fd = new FormData(fr);
-      const patch = { tolerancia_min: +fd.get('tol') || 0, tolerancia_clt: !!fd.get('clt'), dias_uteis: DIAS_SEMANA.map((_, i) => i).filter(i => fd.get('d' + i)) };
-      try { await DB.atualizar('configuracoes', 'id', 1, patch); await auditar('config.alterar', { antes: S.config, depois: patch }); toast('Regras salvas.'); await recarregar(); }
-      catch (err) { toast(msgErro(err), 'erro'); }
-    };
-    const ff = $('#fFer');
-    if (ff) ff.onsubmit = async e => {
-      e.preventDefault(); const fd = new FormData(ff);
-      try { await gravar('feriados', { data: fd.get('data'), descricao: fd.get('descricao').trim() }, 'feriado.criar'); toast('Feriado adicionado.'); await recarregar(); }
-      catch (err) { toast(msgErro(err), 'erro'); }
-    };
-    c.querySelectorAll('[data-rf]').forEach(b => b.onclick = async () => {
-      if (!(await confirmar('Remover este feriado?', 'Remover'))) return;
-      try { await DB.remover('feriados', 'data', b.dataset.rf); await auditar('feriado.remover', { data: b.dataset.rf }); await recarregar(); } catch (err) { toast(msgErro(err), 'erro'); }
-    });
-    $('#bkp').onclick = baixarBackup;
-    const rs = $('#reset'); if (rs) rs.onclick = async () => { if (await confirmar('Apagar todos os dados da demonstração e recomeçar?', 'Apagar')) { DB.resetDemo(); location.reload(); } };
-  };
-
-  async function baixarBackup() {
-    try {
-      const tabelas = ['funcionarios', 'escalas', 'escala_versoes', 'alteracoes', 'batidas', 'batidas_invalidadas', 'ocorrencias', 'feriados', 'configuracoes', 'tentativas', 'auditoria'];
-      const out = { gerado_em: new Date().toISOString(), escola: cfg.ESCOLA, modo: DB.modo };
-      for (const t of tabelas) out[t] = await DB.listar(t);
-      const blob = new Blob([JSON.stringify(out, null, 1)], { type: 'application/json' });
-      const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-      a.download = `backup-ponto-${hojeLocal()}.json`; a.click(); URL.revokeObjectURL(a.href);
-      await auditar('backup.baixar', { tabelas });
-    } catch (e) { toast('Falha no backup: ' + msgErro(e), 'erro'); }
-  }
-
-  /* ================= LOGIN / INÍCIO ================= */
-  function mostrarLogin(erro) {
-    $('#app').hidden = true; $('#login').hidden = false;
-    const el = $('#erroLogin'); el.hidden = !erro; el.textContent = erro || '';
-  }
-  async function abrirApp() {
-    $('#login').hidden = true; $('#app').hidden = false;
-    $('#usuario').innerHTML = `<b>${h(S.sessao.nome || S.sessao.email)}</b><br>perfil ${h(S.sessao.perfil)}`;
-    $('#faixaModo').innerHTML = DB.modo === 'demo' ? '<div class="faixa">MODO DEMONSTRAÇÃO · dados fictícios guardados só neste navegador · preencha o config.js para usar o banco real</div>' : '';
-    montarMenu();
-    await carregarBase();
-    ir(location.hash.slice(1) || 'dashboard');
-  }
-  $('#formLogin').onsubmit = async e => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    try {
-      S.sessao = await DB.login(fd.get('email'), fd.get('senha'));
-      if (!S.sessao || !S.sessao.perfil) { await DB.logout(); return mostrarLogin('Este usuário não tem acesso administrativo.'); }
-      abrirApp().catch(err => mostrarLogin(msgErro(err)));
-    } catch (err) { mostrarLogin(msgErro(err)); }
-  };
-  $('#btnSair').onclick = async () => { await DB.logout(); location.hash = ''; location.reload(); };
-  $('#btnMenu').onclick = () => document.body.classList.toggle('menu-aberto');
-
-  (async function iniciar() {
-    $('#escolaLogin').textContent = cfg.ESCOLA; $('#escolaApp').textContent = cfg.ESCOLA;
-    document.title = 'Administração · ' + cfg.ESCOLA;
-    if (DB.modo === 'demo') $('#dicaDemo').hidden = false;
-    try {
-      S.sessao = await DB.sessao();
-      if (S.sessao && S.sessao.perfil) await abrirApp();
-      else mostrarLogin(S.sessao ? 'Este usuário não tem acesso administrativo.' : '');
-    } catch (e) { mostrarLogin(msgErro(e)); }
-  })();
+  iniciarSessao();
 })();

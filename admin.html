@@ -1,55 +1,45 @@
 <!doctype html>
 <html lang="pt-BR">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Ponto Escolar · Administração</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ponto — Painel da direção</title>
+<link rel="stylesheet" href="style.css">
 </head>
-<body class="admin">
+<body>
 
-  <!-- LOGIN -->
-  <section id="login" class="login">
-    <form id="formLogin" class="login-box">
-      <div class="login-logo">P</div>
-      <h1 id="escolaLogin">Escola</h1>
-      <p class="mut">Painel administrativo · Controle de jornada</p>
-      <label>E-mail<input name="email" type="email" required autocomplete="username"></label>
-      <label>Senha<input name="senha" type="password" required autocomplete="current-password"></label>
-      <button class="btn grande" type="submit">Entrar</button>
-      <div class="alerta erro" id="erroLogin" hidden></div>
-      <div class="alerta info" id="dicaDemo" hidden>Modo demonstração: use qualquer e-mail e a senha <b>demo</b>.</div>
-      <a class="mut peq" href="index.html">← Ir para a tela da recepção</a>
-    </form>
-  </section>
-
-  <!-- APLICAÇÃO -->
-  <div id="app" class="app" hidden>
-    <aside class="lateral">
-      <div class="marca"><span class="rc-logo">P</span><div><b id="escolaApp">Escola</b><small>Controle de jornada</small></div></div>
-      <nav id="menu"></nav>
-      <div class="lateral-rod">
-        <div id="usuario" class="peq"></div>
-        <button class="btn sec peq" id="btnSair">Sair</button>
-      </div>
-    </aside>
-    <main class="principal">
-      <div class="topo-mobile"><button class="btn sec peq" id="btnMenu">☰ Menu</button><b id="tituloMobile"></b></div>
-      <div id="faixaModo"></div>
-      <div id="conteudo"></div>
-    </main>
+<div id="loginView" class="login">
+  <div class="card">
+    <h2 id="escola" style="margin-top:0"></h2>
+    <p class="muted">Painel da direção</p>
+    <label for="email">E-mail</label>
+    <input id="email" type="email" autocomplete="username">
+    <label for="senha">Senha</label>
+    <input id="senha" type="password" autocomplete="current-password">
+    <div id="loginMsg"></div>
+    <p><button class="btn" id="entrar" style="width:100%">Entrar</button></p>
   </div>
+</div>
 
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
-  <script src="config.js"></script>
-  <script src="calc.js"></script>
-  <script src="db.js"></script>
-  <script src="bio.js"></script>
-  <script src="admin.js"></script>
-  <script src="relatorios.js"></script>
+<div id="appView" class="hidden">
+  <div class="top">
+    <h1 id="escola2"></h1>
+    <span class="muted" id="quem"></span>
+    <button class="btn sec sm" id="sair">Sair</button>
+  </div>
+  <div class="tabs" id="tabs">
+    <button class="tab on" data-t="dash">Dashboard</button>
+    <button class="tab" data-t="func">Funcionários</button>
+    <button class="tab" data-t="reg">Registros de ponto</button>
+    <button class="tab" data-t="rel">Relatórios</button>
+  </div>
+  <main id="main"></main>
+</div>
+
+<div id="modalRoot"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script src="admin.js"></script>
 </body>
 </html>
