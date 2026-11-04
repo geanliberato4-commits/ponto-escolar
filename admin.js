@@ -102,12 +102,12 @@
     $("loginView").classList.add("hidden");
     $("appView").classList.remove("hidden");
     icones();
-    var e = await db.from("escalas").select("id,nome").order("id");
+    var e = await db.from("escalas").select("id,nome,ativa").order("id");
     var v = await db.from("escala_versoes").select("escala_id,entrada,saida,vigencia_inicio").order("vigencia_inicio");
     escalas = (e.data || []).map(function (x) {
       var vs = (v.data || []).filter(function (y) { return y.escala_id === x.id; });
       var ult = vs[vs.length - 1];
-      return { id: x.id, nome: x.nome, entrada: ult ? ult.entrada.slice(0, 5) : "", saida: ult ? ult.saida.slice(0, 5) : "" };
+      return { id: x.id, nome: x.nome, ativa: x.ativa !== false, entrada: ult ? ult.entrada.slice(0, 5) : "", saida: ult ? ult.saida.slice(0, 5) : "" };
     });
     var c = await db.from("configuracoes").select("*").eq("id", 1).maybeSingle();
     if (c.data) cfg = c.data;
@@ -330,7 +330,7 @@
   }
 
   function opcoesEscala(sel) {
-    return escalas.map(function (e) {
+    return escalas.filter(function (e) { return e.ativa || e.id === sel; }).map(function (e) {
       return '<option value="' + e.id + '"' + (e.id === sel ? " selected" : "") + ">" + esc(e.nome) + " — " + e.entrada + " às " + e.saida + "</option>";
     }).join("");
   }
@@ -689,27 +689,48 @@
 
   /* ---------- Escalas ---------- */
   async function telaEsc() {
-    var e = await db.from("escalas").select("id,nome").order("id");
+    var e = await db.from("escalas").select("id,nome,ativa").order("id");
     var v = await db.from("escala_versoes").select("*").order("vigencia_inicio", { ascending: false });
     var f = await db.from("funcionarios").select("id,escala_id").eq("ativo", true);
     if (e.error || v.error) throw (e.error || v.error);
-    var cards = e.data.map(function (x) {
+    var arquivadas = e.data.filter(function (x) { return x.ativa === false; });
+    var cards = e.data.filter(function (x) { return x.ativa !== false; }).map(function (x) {
       var vs = v.data.filter(function (y) { return y.escala_id === x.id; });
       var n = (f.data || []).filter(function (p) { return p.escala_id === x.id; }).length;
       var atual = vs.filter(function (y) { return y.vigencia_inicio <= hoje(); })[0] || vs[0];
       return '<div class="card" style="margin-bottom:14px"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><h3 style="margin:0;flex:1">' + esc(x.nome) + '</h3><span class="tag blue">' + n + " funcionário(s)</span>" +
-        (podeEditar() ? '<button class="btn sec sm" data-ev="' + x.id + '"><i data-lucide="plus"></i> Novo horário</button>' : "") + "</div>" +
+        (podeEditar() ? '<button class="btn sec sm" data-ev="' + x.id + '"><i data-lucide="clock"></i> Mudar horário</button> <button class="btn danger sm" data-er="' + x.id + '" data-nome="' + esc(x.nome) + '"><i data-lucide="trash-2"></i> Remover escala</button>' : "") + "</div>" +
         (atual ? '<p style="margin:8px 0">Horário atual: <b>' + atual.entrada.slice(0, 5) + " às " + atual.saida.slice(0, 5) + "</b></p>" : "") +
         (vs.length ? '<div class="scroll"><table><tr><th>A partir de</th><th>Entrada</th><th>Saída</th><th>Motivo</th></tr>' + vs.map(function (y) {
           return "<tr><td>" + dataBR(y.vigencia_inicio) + "</td><td>" + y.entrada.slice(0, 5) + "</td><td>" + y.saida.slice(0, 5) + "</td><td>" + esc(y.motivo || "") + "</td></tr>";
         }).join("") + "</table></div>" : "") + "</div>";
     }).join("");
-    $("main").innerHTML = pageHead("calendar-clock", "Escalas", "Horários de entrada e saída. Cada mudança vira uma versão com data de início; o histórico fica guardado.") +
-      (cards || vazio("calendar-clock", "Nenhuma escala cadastrada."));
+    $("main").innerHTML = pageHead("calendar-clock", "Escalas", "Crie escalas, mude os horários e remova as que não usa mais. Cada mudança de horário vale a partir de uma data e o histórico fica guardado.",
+        (podeEditar() ? '<button class="btn" id="eNova"><i data-lucide="plus"></i> Nova escala</button>' : "")) +
+      (cards || vazio("calendar-clock", "Nenhuma escala cadastrada.")) +
+      (arquivadas.length ? '<div class="card"><h3>Escalas removidas</h3><div class="sub">Ficam guardadas por causa do histórico. Dá para restaurar.</div>' + arquivadas.map(function (x) {
+        return '<div style="display:flex;gap:10px;align-items:center;padding:6px 0"><span style="flex:1">' + esc(x.nome) + "</span>" + (podeEditar() ? '<button class="btn sec sm" data-rs="' + x.id + '">Restaurar</button>' : "") + "</div>";
+      }).join("") + "</div>" : "");
+    if ($("eNova")) $("eNova").addEventListener("click", formNovaEscala);
+    $("main").querySelectorAll("[data-er]").forEach(function (b) {
+      b.addEventListener("click", async function () {
+        if (!confirm("Remover a escala " + b.getAttribute("data-nome") + "?\n\nO histórico continua guardado e dá para restaurar.")) return;
+        var r = await db.rpc("arquivar_escala", { p_id: Number(b.getAttribute("data-er")) });
+        if (r.error || !r.data || !r.data.ok) { toast((r.data && r.data.erro) || (r.error && r.error.message), true); return; }
+        await recarregarEscalas(); ir("esc"); toast("Escala removida.");
+      });
+    });
+    $("main").querySelectorAll("[data-rs]").forEach(function (b) {
+      b.addEventListener("click", async function () {
+        var r = await db.rpc("reativar_escala", { p_id: Number(b.getAttribute("data-rs")) });
+        if (r.error || !r.data || !r.data.ok) { toast((r.data && r.data.erro) || (r.error && r.error.message), true); return; }
+        await recarregarEscalas(); ir("esc"); toast("Escala restaurada.");
+      });
+    });
     $("main").querySelectorAll("[data-ev]").forEach(function (b) {
       b.addEventListener("click", function () {
         var id = Number(b.getAttribute("data-ev"));
-        modal("<h2>Novo horário</h2>" +
+        modal("<h2>Mudar horário</h2>" +
           '<div class="row2"><div><label>Entrada</label><input type="time" id="vE" value="07:00"></div><div><label>Saída</label><input type="time" id="vS" value="17:00"></div></div>' +
           '<label>Vale a partir de</label><input type="date" id="vD" value="' + hoje() + '">' +
           '<label>Motivo (obrigatório)</label><input id="vM"><div id="vMsg"></div>' +
@@ -728,13 +749,30 @@
       });
     });
   }
+  function formNovaEscala() {
+    modal("<h2>Nova escala</h2>" +
+      '<label>Nome</label><input id="nN" placeholder="Ex.: Meio período manhã">' +
+      '<div class="row2"><div><label>Entrada</label><input type="time" id="nE" value="07:00"></div><div><label>Saída</label><input type="time" id="nS" value="16:00"></div></div>' +
+      '<label>Vale a partir de</label><input type="date" id="nD" value="' + hoje() + '"><div id="nMsg"></div>' +
+      '<div class="acts"><button class="btn sec" data-fechar>Cancelar</button><button class="btn" id="nOk">Criar escala</button></div>',
+      function (root, fechar) {
+        root.querySelector("#nOk").addEventListener("click", async function () {
+          var m = root.querySelector("#nMsg");
+          this.disabled = true;
+          var r = await db.rpc("criar_escala", { p_nome: root.querySelector("#nN").value, p_entrada: root.querySelector("#nE").value, p_saida: root.querySelector("#nS").value, p_inicio: root.querySelector("#nD").value || null });
+          this.disabled = false;
+          if (r.error || !r.data || !r.data.ok) { m.innerHTML = msgHtml((r.data && r.data.erro) || (r.error && r.error.message)); return; }
+          fechar(); await recarregarEscalas(); ir("esc"); toast("Escala criada.");
+        });
+      });
+  }
   async function recarregarEscalas() {
-    var e = await db.from("escalas").select("id,nome").order("id");
+    var e = await db.from("escalas").select("id,nome,ativa").order("id");
     var v = await db.from("escala_versoes").select("escala_id,entrada,saida,vigencia_inicio").order("vigencia_inicio");
     escalas = (e.data || []).map(function (x) {
       var vs = (v.data || []).filter(function (y) { return y.escala_id === x.id && y.vigencia_inicio <= hoje(); });
       var ult = vs[vs.length - 1];
-      return { id: x.id, nome: x.nome, entrada: ult ? ult.entrada.slice(0, 5) : "", saida: ult ? ult.saida.slice(0, 5) : "" };
+      return { id: x.id, nome: x.nome, ativa: x.ativa !== false, entrada: ult ? ult.entrada.slice(0, 5) : "", saida: ult ? ult.saida.slice(0, 5) : "" };
     });
   }
 
