@@ -214,3 +214,8 @@ main{padding:24px 22px 40px;max-width:1180px;width:100%;margin:0 auto;animation:
   .rec .cpf{font-size:1.7rem}
   .rec .btn.big{font-size:1.2rem;padding:18px}
 }
+
+/* comprovante na tela */
+.comp{margin:14px 0 0;border:1px dashed #b9c4dd;border-radius:12px;padding:6px 14px;background:#f8faff;text-align:left}
+.comp-row{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--line);font-size:1rem}
+.comp-row:last-child{border-bottom:0}.comp-row span{color:var(--mut)}.comp-row b{text-align:right}

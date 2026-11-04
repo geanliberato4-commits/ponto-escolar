@@ -7,7 +7,7 @@
   var NOMES = { entrada: "Entrada", almoco_saida: "Saída para o almoço", almoco_retorno: "Retorno do almoço", saida: "Saída" };
   var CHAVE = "ec_terminal_token";
   var etapa = "cpf";           // cpf -> pin -> confirmar
-  var cpfAtual = "", pinAtual = "", proxima = null, timer = null;
+  var qtdAtual = 0, cpfAtual = "", pinAtual = "", proxima = null, timer = null;
   var tela = "s1", bioLigada = false, bioRodando = false, templatesTimer = null;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -104,7 +104,7 @@
       var d = r.data;
       if (!d.ok) { var e = d.erro; etapaCpf(); msg(e); return; }
       if (!d.proxima) { etapaCpf(); msg(d.nome + ", as 4 batidas de hoje já foram registradas.", "warn"); return; }
-      pinAtual = pin; proxima = d.proxima;
+      pinAtual = pin; proxima = d.proxima; qtdAtual = d.qtd;
       $("who").textContent = "Olá, " + d.nome + "!";
       $("next").textContent = "Registrar: " + (NOMES[d.proxima] || d.proxima) + " (batida " + (d.qtd + 1) + " de 4)";
       mostrar("s2");
@@ -113,13 +113,23 @@
     finally { $("ok").disabled = false; }
   }
 
-  function sucesso(d) {
-    var h = new Date(d.momento).toLocaleTimeString("pt-BR", { timeZone: TZ, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  function sucesso(d, metodo, n) {
+    var m = new Date(d.momento);
+    var hora = m.toLocaleTimeString("pt-BR", { timeZone: TZ, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    var data = m.toLocaleDateString("pt-BR", { timeZone: TZ, weekday: "long", day: "numeric", month: "long", year: "numeric" });
     $("done").textContent = (NOMES[d.tipo] || d.tipo) + " registrada";
-    $("doneSub").textContent = d.nome + " · " + h;
+    var linhas = [["Funcionário", d.nome], ["Registro", NOMES[d.tipo] || d.tipo], ["Data", data], ["Horário", hora], ["Identificação", metodo]];
+    if (n) linhas.push(["Batida do dia", n + " de 4"]);
+    var box = $("comp"); box.innerHTML = "";
+    linhas.forEach(function (l) {
+      var row = document.createElement("div"); row.className = "comp-row";
+      var a = document.createElement("span"); a.textContent = l[0];
+      var b = document.createElement("b"); b.textContent = l[1];
+      row.appendChild(a); row.appendChild(b); box.appendChild(row);
+    });
     mostrar("s3");
     clearTimeout(timer);
-    timer = setTimeout(reiniciar, 5000);
+    timer = setTimeout(reiniciar, 10000);
   }
 
   async function registrar() {
@@ -128,7 +138,7 @@
       var r = await db.rpc("ponto_registrar_pin", { p_cpf: cpfAtual, p_pin: pinAtual, p_tipo: proxima, p_terminal: C.terminal });
       if (r.error) throw r.error;
       if (!r.data.ok) { var e = r.data.erro; reiniciar(); msg(e); return; }
-      pinAtual = ""; sucesso(r.data);
+      pinAtual = ""; sucesso(r.data, "CPF e PIN", qtdAtual + 1);
     } catch (e) { falha(e, "registrar"); }
     finally { $("confirm").disabled = false; }
   }
@@ -188,7 +198,7 @@
       var r = await db.rpc("ponto_registrar_bio", { p_funcionario_id: id, p_token: lerToken(), p_terminal: C.terminal });
       if (r.error) throw r.error;
       if (!r.data.ok) { msg(r.data.erro); setTimeout(function () { msg(""); }, 4000); return; }
-      sucesso(r.data);
+      sucesso(r.data, "Digital", 0);
     } catch (e) { falha(e, "registrar_bio"); }
   }
 
@@ -209,5 +219,6 @@
   $("voltar").addEventListener("click", function () { etapaCpf(); msg(""); });
   $("confirm").addEventListener("click", registrar);
   $("cancel").addEventListener("click", reiniciar);
+  $("fechar").addEventListener("click", reiniciar);
   etapaCpf(); icones(); iniciarBio();
 })();
