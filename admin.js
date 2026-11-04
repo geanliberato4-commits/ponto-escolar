@@ -284,11 +284,13 @@
       return "<tr><td>" + esc(p.nome) + "</td><td>" + maskCpf(p.cpf) + "</td><td>" + esc(p.cargo || "") + "</td><td>" +
         esc(e ? e.nome + " (" + e.entrada + ")" : "") + "</td><td>" + acesso + '</td><td class="act">' + acoes + "</td></tr>";
     }).join("");
+    var semPin = ativos ? r.data.filter(function (p) { return !pinsSet[p.id]; }).length : 0;
+    var avisoPin = semPin ? '<div class="msg warn"><i data-lucide="key-round"></i><div><b>' + semPin + (semPin === 1 ? " funcionário está" : " funcionários estão") + " sem PIN</b> e não " + (semPin === 1 ? "consegue" : "conseguem") + " bater ponto. Use o botão PIN na linha de cada um.</div></div>" : "";
     $("main").innerHTML =
       pageHead(ativos ? "users" : "archive", ativos ? "Funcionários" : "Ex-funcionários",
         ativos ? "Cadastro da equipe. Quem sai da escola é removido (desligado) e o histórico de ponto continua guardado." : "Pessoas desligadas. O histórico delas continua guardado e dá para reativar.",
         (ativos && podeEditar() ? '<button class="btn" id="novo"><i data-lucide="user-plus"></i> Novo funcionário</button>' : "")) +
-      '<div class="bar-tools"><div class="grow muted">' + r.data.length + (r.data.length === 1 ? " pessoa" : " pessoas") + '</div><div class="field" style="max-width:260px"><i data-lucide="search"></i><input id="busca" placeholder="Buscar por nome"></div></div>' +
+      avisoPin + '<div class="bar-tools"><div class="grow muted">' + r.data.length + (r.data.length === 1 ? " pessoa" : " pessoas") + '</div><div class="field" style="max-width:260px"><i data-lucide="search"></i><input id="busca" placeholder="Buscar por nome"></div></div>' +
       (r.data.length ? '<div class="scroll"><table><tr><th>Nome</th><th>CPF</th><th>Cargo</th><th>Escala</th><th>' + (ativos ? "Acesso ao ponto" : "Situação") + "</th><th></th></tr>" + linhas + "</table></div>"
         : vazio("users", ativos ? "Nenhum funcionário ativo por aqui." : "Nenhum ex-funcionário."));
     if ($("novo")) $("novo").addEventListener("click", function () { formFunc(null); });
