@@ -1,5 +1,5 @@
 /* Cálculo de horas: trabalhadas, extras, devidas, faltas e abonos.
-   Compartilhado pelo relatório mensal e pelo banco de horas. Funciona no navegador e no Node (testes). */
+   Compartilhado pelo relatório mensal e mensal. Funciona no navegador e no Node (testes). */
 (function (root) {
   var TZ = "America/Sao_Paulo";
 
@@ -7,7 +7,7 @@
   var TIPOS_OCORRENCIA = {
     atestado: { rotulo: "Atestado médico", efeito: "dia_abonado" },
     falta_justificada: { rotulo: "Falta justificada", efeito: "dia_abonado" },
-    compensacao: { rotulo: "Folga por banco de horas", efeito: "compensacao" },
+    folga_abonada: { rotulo: "Dia abonado pela direção", efeito: "dia_abonado" },
     abono_atraso: { rotulo: "Abono de atraso", efeito: "minutos" },
     saida_antecipada: { rotulo: "Saída antecipada autorizada", efeito: "minutos" },
     outro: { rotulo: "Outro (apenas registro)", efeito: "info" }

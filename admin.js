@@ -139,7 +139,7 @@
     aba = t;
     $("appView").classList.remove("open");
     document.querySelectorAll("#tabs button").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-t") === t); });
-    var f = { dash: telaDash, func: telaFunc, ex: telaEx, reg: telaReg, ocor: telaOcor, banco: telaBanco, rel: telaRel, esc: telaEsc, cfg: telaCfg }[t];
+    var f = { dash: telaDash, func: telaFunc, ex: telaEx, reg: telaReg, ocor: telaOcor, rel: telaRel, esc: telaEsc, cfg: telaCfg }[t];
     $("main").innerHTML = esqueleto();
     f().then(icones).catch(function (e) {
       $("main").innerHTML = '<div class="msg err"><i data-lucide="alert-triangle"></i><div>Não foi possível carregar esta tela. ' + esc(e.message || e) + '<br><button class="btn sec sm" id="tentar" style="margin-top:8px">Tentar de novo</button></div></div>';
@@ -428,7 +428,7 @@
   async function telaReg() {
     regData = regData || hoje();
     var b = await db.from("batidas").select("*").eq("data", regData).order("momento");
-    var f = await db.from("funcionarios").select("id,nome").order("nome");
+    var f = await db.from("funcionarios").select("id,nome,ativo").order("nome");
     var inv = await db.from("batidas_invalidadas").select("*");
     if (b.error || f.error) throw (b.error || f.error);
     var nomes = {}; f.data.forEach(function (x) { nomes[x.id] = x.nome; });
@@ -438,16 +438,23 @@
       return "<tr" + (i ? ' style="opacity:.55"' : "") + "><td>" + esc(nomes[x.funcionario_id] || "?") + "</td><td>" + NOMES[x.tipo] + "</td><td>" + hora(x.momento) + "</td><td>" +
         (x.origem === "ajuste" ? '<span class="tag warn">Ajuste</span>' : '<span class="tag">Recepção</span>') + "</td><td>" +
         (i ? '<span class="tag err">Invalidada</span><br><small>' + esc(i.motivo) + "</small>" : (x.motivo ? "<small>" + esc(x.motivo) + "</small>" : "")) + '</td><td class="act">' +
-        (podeEditar() && !i ? '<button class="btn sec sm" data-inv="' + x.id + '"><i data-lucide="ban"></i> Invalidar</button>' : "") + "</td></tr>";
+        (podeEditar() && !i ? '<button class="btn sec sm" data-ed="' + x.id + '"><i data-lucide="pencil"></i> Corrigir hora</button> <button class="btn sec sm" data-inv="' + x.id + '"><i data-lucide="ban"></i> Invalidar</button>' : "") + "</td></tr>";
     }).join("");
     $("main").innerHTML =
       pageHead("clock", "Registros de ponto", "Batidas de cada dia. Para corrigir, invalide a batida com motivo e lance um ajuste.",
-        (podeEditar() ? '<button class="btn" id="rgAj"><i data-lucide="plus"></i> Lançar batida de ajuste</button>' : "")) +
+        (podeEditar() ? '<button class="btn" id="rgAj"><i data-lucide="plus"></i> Lançar batida esquecida</button> <button class="btn sec" id="rgAb"><i data-lucide="file-check"></i> Abonar dia (atestado etc.)</button>' + (perfil === "admin" ? ' <button class="btn sec" id="rgSA"><i data-lucide="calendar-off"></i> Dia sem aula/feriado</button>' : "") : "")) +
       '<div class="bar-tools"><label class="chk" for="rgD"><i data-lucide="calendar"></i> Dia</label><input type="date" id="rgD" value="' + regData + '"></div>' +
       (b.data.length ? '<div class="scroll"><table><tr><th>Funcionário</th><th>Tipo</th><th>Hora</th><th>Origem</th><th>Observação</th><th></th></tr>' + linhas + "</table></div>"
         : vazio("clock", "Nenhuma batida em " + dataBR(regData) + "."));
     $("rgD").addEventListener("change", function () { regData = this.value || hoje(); ir("reg"); });
-    if ($("rgAj")) $("rgAj").addEventListener("click", function () { formAjuste(f.data); });
+    var ativosF = f.data.filter(function (x) { return x.ativo; });
+    if ($("rgAj")) $("rgAj").addEventListener("click", function () { formAjuste(ativosF); });
+    if ($("rgAb")) $("rgAb").addEventListener("click", function () { formOcor(ativosF, regData, "falta_justificada"); });
+    if ($("rgSA")) $("rgSA").addEventListener("click", function () { formDiaSemAula(regData); });
+    var bPorId = {}; b.data.forEach(function (x) { bPorId[x.id] = x; });
+    $("main").querySelectorAll("[data-ed]").forEach(function (bt) {
+      bt.addEventListener("click", function () { var x = bPorId[bt.getAttribute("data-ed")]; formEditarBatida(x, nomes[x.funcionario_id]); });
+    });
     $("main").querySelectorAll("[data-inv]").forEach(function (bt) {
       bt.addEventListener("click", function () { formInvalidar(Number(bt.getAttribute("data-inv"))); });
     });
@@ -466,8 +473,40 @@
         });
       });
   }
+  function formEditarBatida(x, nome) {
+    modal("<h2>Corrigir horário</h2><p><b>" + esc(nome) + "</b> · " + NOMES[x.tipo] + " em " + dataBR(x.data) + ". Hoje consta " + hora(x.momento) + ". A batida antiga fica guardada como invalidada e uma nova é lançada como ajuste.</p>" +
+      '<label>Horário correto</label><input type="time" id="eH" value="' + hora(x.momento) + '"><label>Motivo (obrigatório)</label><input id="eM" placeholder="Ex.: bateu na hora errada"><div id="eMsg"></div>' +
+      '<div class="acts"><button class="btn sec" data-fechar>Cancelar</button><button class="btn" id="eOk">Corrigir</button></div>',
+      function (root, fechar) {
+        root.querySelector("#eOk").addEventListener("click", async function () {
+          var h = root.querySelector("#eH").value, mot = root.querySelector("#eM").value.trim(), m = root.querySelector("#eMsg");
+          if (!h || mot.length < 3) { m.innerHTML = msgHtml("Informe o horário e o motivo."); return; }
+          this.disabled = true;
+          var inv = await db.from("batidas_invalidadas").insert({ batida_id: x.id, motivo: "Corrigida: " + mot });
+          if (inv.error) { m.innerHTML = msgHtml(inv.error.message); this.disabled = false; return; }
+          var r = await db.from("batidas").insert({ funcionario_id: x.funcionario_id, tipo: x.tipo, data: x.data, momento: x.data + "T" + h + ":00-03:00", origem: "ajuste", metodo: "ajuste", motivo: mot });
+          if (r.error) { m.innerHTML = msgHtml("A batida antiga foi invalidada, mas a nova não foi lançada: " + r.error.message + ". Use Lançar batida esquecida."); this.disabled = false; return; }
+          await db.from("auditoria").insert({ acao: "batida.corrigir", detalhe: { batida_id: x.id, novo: h, motivo: mot } });
+          fechar(); ir("reg"); toast("Horário corrigido.");
+        });
+      });
+  }
+  function formDiaSemAula(data) {
+    modal("<h2>Dia sem aula / feriado</h2><p>Vale para <b>todos</b> os funcionários: o dia não conta como falta e quem trabalhar tem tudo como hora extra.</p>" +
+      '<label>Data</label><input type="date" id="sD" value="' + data + '"><label>Descrição</label><input id="sT" placeholder="Ex.: Recesso escolar"><div id="sMsg"></div>' +
+      '<div class="acts"><button class="btn sec" data-fechar>Cancelar</button><button class="btn" id="sOk">Salvar</button></div>',
+      function (root, fechar) {
+        root.querySelector("#sOk").addEventListener("click", async function () {
+          var d = root.querySelector("#sD").value, t = root.querySelector("#sT").value.trim();
+          if (!d || t.length < 2) { root.querySelector("#sMsg").innerHTML = msgHtml("Informe a data e a descrição."); return; }
+          var r = await db.from("feriados").insert({ data: d, descricao: t });
+          if (r.error) { root.querySelector("#sMsg").innerHTML = msgHtml(r.error.code === "23505" ? "Esse dia já está cadastrado." : r.error.message); return; }
+          fechar(); ir("reg"); toast("Dia marcado.");
+        });
+      });
+  }
   function formAjuste(funcs) {
-    modal("<h2>Lançar batida de ajuste</h2>" +
+    modal("<h2>Lançar batida esquecida</h2>" +
       '<label>Funcionário</label><select id="aF">' + funcs.map(function (x) { return '<option value="' + x.id + '">' + esc(x.nome) + "</option>"; }).join("") + "</select>" +
       '<label>Tipo</label><select id="aT">' + TIPOS.map(function (t) { return '<option value="' + t + '">' + NOMES[t] + "</option>"; }).join("") + "</select>" +
       '<div class="row2"><div><label>Data</label><input type="date" id="aD" value="' + regData + '"></div><div><label>Hora</label><input type="time" id="aH"></div></div>' +
@@ -487,7 +526,7 @@
       });
   }
 
-  /* ---------- dados compartilhados (relatório, banco de horas) ---------- */
+  /* ---------- dados compartilhados (relatório) ---------- */
   var TIPOS_OC = Calc.TIPOS_OCORRENCIA;
   function diasDoMes(ym) {
     var p = ym.split("-"), n = new Date(Number(p[0]), Number(p[1]), 0).getDate(), out = [];
@@ -545,7 +584,7 @@
       return "<tr><td>" + esc(nomes[x.funcionario_id] || "?") + "</td><td>" + esc(t.rotulo) + "</td><td>" + per + "</td><td>" + (x.minutos ? hm(x.minutos) : "") + "</td><td>" + esc(x.descricao || "") + "</td><td>" + (ST[x.status] || x.status) + '</td><td class="act">' + ac + "</td></tr>";
     }).join("");
     $("main").innerHTML =
-      pageHead("file-check", "Ocorrências e abonos", "Atestados, faltas justificadas, folgas por banco de horas e abonos. Só as aprovadas pelo administrador entram nos cálculos.",
+      pageHead("file-check", "Ocorrências e abonos", "Atestados, faltas justificadas, dias abonados e abonos de atraso. Só as aprovadas pelo administrador entram nos cálculos.",
         (podeEditar() ? '<button class="btn" id="oNova"><i data-lucide="plus"></i> Nova ocorrência</button>' : "")) +
       (o.data.length ? '<div class="scroll"><table><tr><th>Funcionário</th><th>Tipo</th><th>Período</th><th>Minutos</th><th>Descrição</th><th>Situação</th><th></th></tr>' + linhas + "</table></div>"
         : vazio("file-check", "Nenhuma ocorrência registrada."));
@@ -559,11 +598,11 @@
     $("main").querySelectorAll("[data-ap]").forEach(function (b) { b.addEventListener("click", function () { decidir(Number(b.getAttribute("data-ap")), "aprovada"); }); });
     $("main").querySelectorAll("[data-rj]").forEach(function (b) { b.addEventListener("click", function () { decidir(Number(b.getAttribute("data-rj")), "rejeitada"); }); });
   }
-  function formOcor(funcs) {
+  function formOcor(funcs, dataPad, tipoPad, funcPad) {
     modal("<h2>Nova ocorrência</h2>" +
       '<label>Funcionário</label><select id="oF">' + funcs.map(function (x) { return '<option value="' + x.id + '">' + esc(x.nome) + "</option>"; }).join("") + "</select>" +
       '<label>Tipo</label><select id="oT">' + Object.keys(TIPOS_OC).map(function (k) { return '<option value="' + k + '">' + esc(TIPOS_OC[k].rotulo) + "</option>"; }).join("") + "</select>" +
-      '<div class="row2"><div><label>De</label><input type="date" id="oI" value="' + hoje() + '"></div><div><label>Até</label><input type="date" id="oFim" value="' + hoje() + '"></div></div>' +
+      '<div class="row2"><div><label>De</label><input type="date" id="oI" value="' + (dataPad || hoje()) + '"></div><div><label>Até</label><input type="date" id="oFim" value="' + (dataPad || hoje()) + '"></div></div>' +
       '<div id="oBoxMin" class="hidden"><label>Minutos abonados</label><input type="number" id="oMin" min="1" max="600" placeholder="Ex.: 30"></div>' +
       '<label>Descrição / motivo (obrigatório)</label><input id="oD" placeholder="Ex.: atestado do Dr. Fulano, CID não informado"><div id="oMsg"></div>' +
       '<p class="muted" style="font-size:.82rem">' + (perfil === "admin" ? "Como administrador, a ocorrência já entra aprovada." : "Ficará pendente até o administrador aprovar.") + "</p>" +
@@ -571,6 +610,7 @@
       function (root, fechar) {
         var tp = root.querySelector("#oT");
         function ajusta() { root.querySelector("#oBoxMin").classList.toggle("hidden", TIPOS_OC[tp.value].efeito !== "minutos"); }
+        if (tipoPad) tp.value = tipoPad; if (funcPad) root.querySelector("#oF").value = String(funcPad);
         tp.addEventListener("change", ajusta); ajusta();
         root.querySelector("#oOk").addEventListener("click", async function () {
           var m = root.querySelector("#oMsg"), ini = root.querySelector("#oI").value, fim = root.querySelector("#oFim").value || ini;
@@ -587,46 +627,13 @@
       });
   }
 
-  /* ---------- Banco de horas ---------- */
-  async function telaBanco() {
-    var mes = hoje().slice(0, 7);
-    $("main").innerHTML =
-      pageHead("piggy-bank", "Banco de horas", "Saldo acumulado de cada funcionário: extras menos horas devidas, desde a primeira batida no sistema.") +
-      '<div class="bar-tools"><label class="chk" for="bM">Até o fim de</label><input type="month" id="bM" value="' + mes + '"><button class="btn" id="bG"><i data-lucide="play"></i> Calcular</button><button class="btn sec hidden" id="bX"><i data-lucide="download"></i> Exportar Excel (CSV)</button></div><div id="bOut"></div>';
-    var linhasCsv = [];
-    $("bG").addEventListener("click", async function () {
-      var ym = $("bM").value; if (!ym) return;
-      $("bOut").innerHTML = '<div class="skel" style="height:160px"></div>';
-      var dm = diasDoMes(ym), iniMes = dm[0], fimMes = dm[dm.length - 1], pri = await primeiraBatida();
-      var f = await db.from("funcionarios").select("id,nome,cpf,cargo,admissao,ativo,desligamento").eq("ativo", true).order("nome");
-      if (f.error) throw f.error;
-      if (!pri) { $("bOut").innerHTML = vazio("piggy-bank", "Ainda não há batidas registradas."); return; }
-      var dados = await carregarPeriodo(pri, fimMes);
-      var corpo = "";
-      linhasCsv = [["Funcionário", "Saldo anterior", "Extras do mês", "Devidas do mês", "Saldo do mês", "Saldo acumulado"]];
-      f.data.forEach(function (p) {
-        var r = calcular(p, pri, fimMes, dados), ant = 0, mesE = 0, mesD = 0;
-        r.dias.forEach(function (d) {
-          if (d.d < iniMes) ant += d.extra - d.dev; else { mesE += d.extra; mesD += d.dev; }
-        });
-        var sm = mesE - mesD, ac = ant + sm;
-        corpo += "<tr><td>" + esc(p.nome) + "</td><td>" + hm(ant) + '</td><td class="pos">' + hm(mesE) + '</td><td class="neg">' + hm(mesD) + "</td><td>" + hm(sm) + '</td><td class="' + (ac < 0 ? "neg" : "pos") + '"><b>' + hm(ac) + "</b></td></tr>";
-        linhasCsv.push([p.nome, hm(ant), hm(mesE), hm(mesD), hm(sm), hm(ac)]);
-      });
-      $("bOut").innerHTML = '<div class="scroll"><table><tr><th>Funcionário</th><th>Saldo anterior</th><th>Extras do mês</th><th>Devidas do mês</th><th>Saldo do mês</th><th>Saldo acumulado</th></tr>' + corpo + "</table></div>" +
-        '<p class="muted" style="font-size:.8rem">Contagem a partir de ' + dataBR(pri) + " (primeira batida no sistema) ou da admissão, o que for mais recente. Folgas por banco de horas devem ser lançadas em Ocorrências.</p>";
-      $("bX").classList.remove("hidden"); icones();
-    });
-    $("bX").addEventListener("click", function () { baixarCsv("banco-de-horas-" + $("bM").value + ".csv", linhasCsv); });
-  }
-
   /* ---------- Relatórios ---------- */
   async function telaRel() {
     var f = await db.from("funcionarios").select("id,nome,cpf,cargo,admissao,ativo,desligamento").order("nome");
     if (f.error) throw f.error;
     var mes = hoje().slice(0, 7);
     $("main").innerHTML =
-      pageHead("file-text", "Relatórios", "Horas trabalhadas, extras, devidas, faltas e saldo por mês, em PDF, impressão ou Excel.") +
+      pageHead("file-text", "Relatórios", "Fechamento mensal: horas extras a pagar e horas devidas a descontar. Não há acúmulo de banco de horas. PDF, impressão ou Excel.") +
       '<div class="bar-tools"><input type="month" id="rM" value="' + mes + '">' +
       '<select id="rF" style="max-width:280px"><option value="0">Todos (consolidado)</option>' +
       f.data.map(function (x) { return '<option value="' + x.id + '">' + esc(x.nome) + (x.ativo ? "" : " (desligado)") + "</option>"; }).join("") + "</select>" +
@@ -650,8 +657,8 @@
     var cab = '<div class="printonly"><img src="img/logo.png" alt=""><h2>Relatório de ponto — ' + esc(C.escola) + "</h2></div>";
     html = cab + '<p class="muted">Período: ' + dataBR(ini) + " a " + dataBR(fim) + " · Jornada: " + hm(C.jornadaMin) + " · Tolerância: " + tol + " min</p>";
     if (!fid) {
-      csv.push(["Funcionário", "Dias trabalhados", "Horas trabalhadas", "Extras", "Devidas", "Faltas", "Abonados", "Saldo"]);
-      html += '<div class="scroll"><table><tr><th>Funcionário</th><th>Dias trabalhados</th><th>Horas trabalhadas</th><th>Extras</th><th>Devidas</th><th>Faltas</th><th>Abonos</th><th>Saldo</th></tr>' +
+      csv.push(["Funcionário", "Dias trabalhados", "Horas trabalhadas", "Extras (a pagar)", "Devidas (a descontar)", "Faltas", "Abonados", "Líquido do mês"]);
+      html += '<div class="scroll"><table><tr><th>Funcionário</th><th>Dias trabalhados</th><th>Horas trabalhadas</th><th>Extras (a pagar)</th><th>Devidas (a descontar)</th><th>Faltas</th><th>Abonos</th><th>Líquido do mês</th></tr>' +
         resultados.map(function (r) {
           var s = r.extra - r.dev;
           csv.push([r.p.nome, r.diasTrab, hm(r.trab), hm(r.extra), hm(r.dev), r.faltas, r.abonados, hm(s)]);
@@ -670,8 +677,8 @@
           return "<tr><td>" + dataBR(x.d) + "</td>" + TIPOS.map(function (t) { return "<td>" + (m[t] ? hora(m[t]) : "") + "</td>"; }).join("") +
             "<td>" + (x.trab ? hm(x.trab) : "") + '</td><td class="pos">' + (x.extra ? hm(x.extra) : "") + '</td><td class="neg">' + (x.dev ? hm(x.dev) : "") + "</td><td>" + esc(x.obs) + "</td></tr>";
         }).join("") + "</table></div>" +
-        "<p><b>Totais:</b> trabalhadas " + hm(r.trab) + " · extras " + hm(r.extra) + " · devidas " + hm(r.dev) + " · faltas " + r.faltas + " · abonados " + r.abonados + " · <b>saldo " + hm(s) + "</b></p>";
-      csv.push([]); csv.push(["Totais", "", "", "", "", hm(r.trab), hm(r.extra), hm(r.dev), "Saldo " + hm(s)]);
+        "<p><b>Totais:</b> trabalhadas " + hm(r.trab) + " · extras " + hm(r.extra) + " · devidas " + hm(r.dev) + " · faltas " + r.faltas + " · abonados " + r.abonados + " · <b>líquido do mês " + hm(s) + "</b></p>";
+      csv.push([]); csv.push(["Totais", "", "", "", "", hm(r.trab), hm(r.extra), hm(r.dev), "Líquido " + hm(s)]);
     }
     html += '<p class="muted" style="font-size:.8rem">Controle interno, não é registro de ponto homologado (Portaria MTP 671/2021). Ocorrências aprovadas (atestados, abonos, folgas) já estão consideradas.</p>';
     $("rOut").innerHTML = html;
@@ -749,7 +756,7 @@
       '<label>Dias úteis</label><div class="dias">' + dow.map(function (n, i) { return '<label class="chk"><input type="checkbox" data-dw="' + i + '"' + (uteis.indexOf(i) >= 0 ? " checked" : "") + "> " + n + "</label>"; }).join(" ") + "</div>" +
       '<label class="chk" style="margin-top:12px"><input type="checkbox" id="cPin"' + (cfg.exigir_pin !== false ? " checked" : "") + "> Exigir PIN na recepção (recomendado)</label>" +
       '<div id="cMsg"></div>' + (podeEditar() ? '<div class="acts"><button class="btn" id="cSalvar">Salvar regras</button></div>' : "") + "</div>" +
-      '<div class="card" style="margin-bottom:14px"><h3>Feriados e recessos</h3><div class="sub">Dias que não contam como falta.</div>' +
+      '<div class="card" style="margin-bottom:14px"><h3>Feriados e dias sem aula</h3><div class="sub">Dias que não contam como falta para ninguém.</div>' +
       (podeEditar() ? '<div class="bar-tools"><input type="date" id="fD"><input id="fDesc" placeholder="Descrição (ex.: Natal)" style="max-width:260px"><button class="btn" id="fAdd"><i data-lucide="plus"></i> Adicionar</button></div>' : "") +
       ((fer.data || []).length ? '<div class="scroll"><table><tr><th>Data</th><th>Descrição</th><th></th></tr>' + fer.data.map(function (x) {
         return "<tr><td>" + dataBR(x.data) + "</td><td>" + esc(x.descricao) + '</td><td class="act">' + (podeEditar() ? '<button class="btn danger sm" data-fd="' + esc(x.data) + '"><i data-lucide="trash-2"></i></button>' : "") + "</td></tr>";
