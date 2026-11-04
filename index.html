@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Registro de Ponto</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="recepcao">
+  <header class="rc-top">
+    <div class="rc-escola"><span class="rc-logo">P</span><span id="nomeEscola">Escola</span></div>
+    <div class="rc-modo" id="modoInfo"></div>
+  </header>
+
+  <main class="rc-main">
+    <section class="rc-relogio">
+      <div class="rc-hora" id="hora">--:--:--</div>
+      <div class="rc-data" id="data"></div>
+      <div class="rc-aviso" id="avisoRelogio" hidden></div>
+    </section>
+    <section class="rc-card" id="painel" aria-live="polite"></section>
+  </main>
+
+  <footer class="rc-rodape">
+    Registro de ponto para controle interno · Correções somente pela secretaria/direção ·
+    <a href="admin.html">Administração</a>
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="config.js"></script>
+  <script src="calc.js"></script>
+  <script src="db.js"></script>
+  <script src="bio.js"></script>
+  <script src="recepcao.js"></script>
+</body>
+</html>
