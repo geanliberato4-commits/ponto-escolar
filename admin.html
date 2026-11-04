@@ -3,41 +3,69 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Ponto — Painel da direção</title>
+<title>Estação Criança — Painel do ponto</title>
+<link rel="icon" type="image/png" href="img/favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<div id="loginView" class="login">
-  <div class="card">
-    <h2 id="escola" style="margin-top:0"></h2>
-    <p class="muted">Painel da direção</p>
-    <label for="email">E-mail</label>
-    <input id="email" type="email" autocomplete="username">
-    <label for="senha">Senha</label>
-    <input id="senha" type="password" autocomplete="current-password">
-    <div id="loginMsg"></div>
-    <p><button class="btn" id="entrar" style="width:100%">Entrar</button></p>
+<!-- Login -->
+<div id="loginView" class="auth">
+  <div class="auth-art">
+    <div class="logo-card"><img src="img/logo.png" alt="Estação Criança"></div>
+    <h2>Controle de ponto</h2>
+    <p>Registros, escalas e relatórios da equipe em um só lugar.</p>
+  </div>
+  <div class="auth-form">
+    <div class="auth-box">
+      <img class="mobile-logo" src="img/logo.png" alt="Estação Criança">
+      <h1>Bem-vindo(a)</h1>
+      <p class="muted" style="margin:0 0 6px">Entre com o seu acesso da direção.</p>
+      <label for="email">E-mail</label>
+      <div class="field"><i data-lucide="mail"></i><input id="email" type="email" autocomplete="username" placeholder="seu@email.com"></div>
+      <label for="senha">Senha</label>
+      <div class="field"><i data-lucide="lock"></i><input id="senha" type="password" autocomplete="current-password" placeholder="Sua senha"></div>
+      <div id="loginMsg"></div>
+      <button class="btn big" id="entrar" style="margin-top:14px"><i data-lucide="log-in"></i> Entrar</button>
+      <p class="muted" style="font-size:.8rem;text-align:center;margin-top:18px">Acesso restrito. Cada pessoa usa o próprio login.</p>
+    </div>
   </div>
 </div>
 
-<div id="appView" class="hidden">
-  <div class="top">
-    <h1 id="escola2"></h1>
-    <span class="muted" id="quem"></span>
-    <button class="btn sec sm" id="sair">Sair</button>
+<!-- Painel -->
+<div id="appView" class="shell hidden">
+  <aside class="side" id="side">
+    <div class="side-head"><div class="logo-card"><img src="img/logo.png" alt="Estação Criança"></div></div>
+    <nav class="nav" id="tabs">
+      <div class="nav-label">Menu</div>
+      <button class="on" data-t="dash" title="Dashboard"><i data-lucide="layout-dashboard"></i><span>Dashboard</span></button>
+      <button data-t="func" title="Funcionários"><i data-lucide="users"></i><span>Funcionários</span></button>
+      <button data-t="reg" title="Registros de ponto"><i data-lucide="clock"></i><span>Registros de ponto</span></button>
+      <button data-t="rel" title="Relatórios"><i data-lucide="file-text"></i><span>Relatórios</span></button>
+    </nav>
+    <div class="side-foot">
+      <div class="user"><div class="avatar" id="avatar">?</div><div><b id="quemNome"></b><small id="quemPerfil"></small></div></div>
+      <button class="side-btn collapse-btn" id="recolher" title="Recolher menu"><i data-lucide="panel-left-close"></i><span>Recolher menu</span></button>
+      <button class="side-btn" id="sair"><i data-lucide="log-out"></i><span>Sair</span></button>
+    </div>
+  </aside>
+  <div class="scrim" id="scrim"></div>
+  <div class="content">
+    <header class="topbar">
+      <button class="burger" id="burger" aria-label="Abrir menu"><i data-lucide="menu"></i></button>
+      <div class="school" id="escola2"></div>
+      <div class="today" id="hojeTxt"></div>
+    </header>
+    <main id="main"></main>
   </div>
-  <div class="tabs" id="tabs">
-    <button class="tab on" data-t="dash">Dashboard</button>
-    <button class="tab" data-t="func">Funcionários</button>
-    <button class="tab" data-t="reg">Registros de ponto</button>
-    <button class="tab" data-t="rel">Relatórios</button>
-  </div>
-  <main id="main"></main>
 </div>
 
 <div id="modalRoot"></div>
 
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="config.js"></script>
 <script src="admin.js"></script>

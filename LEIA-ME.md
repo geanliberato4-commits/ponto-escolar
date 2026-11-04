@@ -14,3 +14,6 @@ No painel, em Funcionários, o botão **Remover** desliga a pessoa (ela deixa de
 ## Regras
 Jornada de 8h24; 4 batidas por dia em sequência; batidas não são editadas nem apagadas (invalide com motivo e lance um ajuste).
 Controle interno, não é registro de ponto homologado (Portaria MTP 671/2021).
+
+## Visual
+Identidade Estação Criança: logo em `img/logo.png` (fundo transparente), fonte Inter e ícones Lucide (carregados por CDN). Menu lateral recolhível e layout responsivo.

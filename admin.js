@@ -36,6 +36,27 @@
   }
   function podeEditar() { return perfil === "admin" || perfil === "gestor"; }
   function msgHtml(t, tipo) { return t ? '<div class="msg ' + (tipo || "err") + '">' + esc(t) + "</div>" : ""; }
+  function icones() { try { if (window.lucide) lucide.createIcons(); } catch (e) {} }
+  function iniciais(n) { var p = String(n || "?").trim().split(/\s+/); return ((p[0] || "?")[0] + (p.length > 1 ? p[p.length - 1][0] : "")).toUpperCase(); }
+  function pageHead(icone, titulo, desc, acoes) {
+    return '<div class="page-head"><div class="ph-ic"><i data-lucide="' + icone + '"></i></div><div class="ph-t"><h2>' + esc(titulo) + "</h2><p>" + esc(desc) + "</p></div>" + (acoes || "") + "</div>";
+  }
+  function vazio(icone, texto) { return '<div class="card empty"><i data-lucide="' + icone + '"></i>' + esc(texto) + "</div>"; }
+  function toast(t, erro) {
+    var el = document.createElement("div");
+    el.className = "toast" + (erro ? " err" : "");
+    el.textContent = t;
+    document.body.appendChild(el);
+    setTimeout(function () { el.remove(); }, 3500);
+  }
+  function esqueleto() {
+    return '<div class="kpis"><div class="skel" style="height:80px"></div><div class="skel" style="height:80px"></div><div class="skel" style="height:80px"></div></div><div class="skel" style="height:220px"></div>';
+  }
+  function minLocal(iso) {
+    var p = new Date(iso).toLocaleTimeString("en-GB", { timeZone: TZ, hour12: false }).split(":");
+    return Number(p[0]) * 60 + Number(p[1]);
+  }
+  function dataLocal(ms) { return new Date(ms).toLocaleDateString("sv-SE", { timeZone: TZ }); }
 
   async function buscarTudo(q) {
     var out = [], from = 0, passo = 1000;
@@ -55,12 +76,14 @@
     function fechar() { root.innerHTML = ""; }
     root.querySelectorAll("[data-fechar]").forEach(function (b) { b.addEventListener("click", fechar); });
     if (montar) montar(root, fechar);
+    icones();
     return fechar;
   }
 
   /* ---------- login ---------- */
-  $("escola").textContent = C.escola;
-  $("escola2").textContent = C.escola + " — Ponto";
+  $("escola2").textContent = C.escola + " · Controle de ponto";
+  $("hojeTxt").textContent = new Date().toLocaleDateString("pt-BR", { timeZone: TZ, weekday: "long", day: "numeric", month: "long" });
+  icones();
 
   async function iniciarSessao() {
     var s = await db.auth.getSession();
@@ -73,9 +96,13 @@
     }
     perfil = r.data;
     meuEmail = s.data.session.user.email;
-    $("quem").textContent = meuEmail + " (" + perfil + ")";
+    var rotulo = { admin: "Administrador", gestor: "Gestor", consulta: "Consulta" }[perfil] || perfil;
+    $("quemNome").textContent = meuEmail;
+    $("quemPerfil").textContent = rotulo;
+    $("avatar").textContent = iniciais(meuEmail.split("@")[0].replace(/[._-]+/g, " "));
     $("loginView").classList.add("hidden");
     $("appView").classList.remove("hidden");
+    icones();
     var e = await db.from("escalas").select("id,nome").order("id");
     var v = await db.from("escala_versoes").select("escala_id,entrada,saida,vigencia_inicio").order("vigencia_inicio");
     escalas = (e.data || []).map(function (x) {
@@ -91,6 +118,7 @@
     $("appView").classList.add("hidden");
     $("loginView").classList.remove("hidden");
     $("loginMsg").innerHTML = msgHtml(m);
+    icones();
   }
   async function entrar() {
     $("loginMsg").innerHTML = ""; $("entrar").disabled = true;
@@ -105,49 +133,93 @@
   $("sair").addEventListener("click", async function () { await db.auth.signOut(); perfil = null; mostrarLogin(); });
 
   $("tabs").addEventListener("click", function (e) {
-    var t = e.target.getAttribute("data-t");
-    if (t) ir(t);
+    var b = e.target.closest("button[data-t]");
+    if (b) ir(b.getAttribute("data-t"));
   });
   function ir(t) {
     aba = t;
-    document.querySelectorAll(".tab").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-t") === t); });
+    $("appView").classList.remove("open");
+    document.querySelectorAll("#tabs button").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-t") === t); });
     var f = { dash: telaDash, func: telaFunc, reg: telaReg, rel: telaRel }[t];
-    $("main").innerHTML = '<p class="muted">Carregando…</p>';
-    f().catch(function (e) { $("main").innerHTML = msgHtml("Erro: " + (e.message || e)); });
+    $("main").innerHTML = esqueleto();
+    f().then(icones).catch(function (e) {
+      $("main").innerHTML = '<div class="msg err"><i data-lucide="alert-triangle"></i><div>Não foi possível carregar esta tela. ' + esc(e.message || e) + '<br><button class="btn sec sm" id="tentar" style="margin-top:8px">Tentar de novo</button></div></div>';
+      $("tentar").addEventListener("click", function () { ir(t); });
+      icones();
+    });
   }
+  // menu: recolher/expandir e versão celular
+  try { if (localStorage.getItem("menuRecolhido") === "1") $("appView").classList.add("collapsed"); } catch (e) {}
+  $("recolher").addEventListener("click", function () {
+    var c = $("appView").classList.toggle("collapsed");
+    try { localStorage.setItem("menuRecolhido", c ? "1" : "0"); } catch (e) {}
+  });
+  $("burger").addEventListener("click", function () { $("appView").classList.add("open"); });
+  $("scrim").addEventListener("click", function () { $("appView").classList.remove("open"); });
 
   /* ---------- Dashboard ---------- */
   async function telaDash() {
-    var d = hoje();
-    var f = await db.from("funcionarios").select("id,nome,escala_id").eq("ativo", true).order("nome");
-    var b = await db.from("batidas").select("id,funcionario_id,tipo,momento").eq("data", d);
-    var inv = await db.from("batidas_invalidadas").select("batida_id");
-    if (f.error || b.error) throw (f.error || b.error);
-    var invSet = {}; (inv.data || []).forEach(function (i) { invSet[i.batida_id] = 1; });
-    var por = {};
-    b.data.forEach(function (x) { if (!invSet[x.id]) { (por[x.funcionario_id] = por[x.funcionario_id] || {})[x.tipo] = x.momento; } });
-    var presentes = 0, completos = 0, ausentes = 0;
-    var linhas = f.data.map(function (p) {
-      var m = por[p.id] || {};
-      var n = Object.keys(m).length;
-      var st;
-      if (n === 0) { ausentes++; st = '<span class="tag warn">Sem batida</span>'; }
-      else if (n === 4) { completos++; st = '<span class="tag ok">Jornada completa</span>'; }
-      else { presentes++; st = '<span class="tag">Em andamento</span>'; }
-      var esc_ = escalas.filter(function (e) { return e.id === p.escala_id; })[0];
-      return "<tr><td>" + esc(p.nome) + '</td><td class="muted">' + esc(esc_ ? esc_.nome : "") + "</td>" +
-        TIPOS.map(function (t) { return "<td>" + (m[t] ? hora(m[t]) : "—") + "</td>"; }).join("") +
-        "<td>" + st + "</td></tr>";
+    var d = hoje(), dias = [];
+    for (var i = 6; i >= 0; i--) dias.push(dataLocal(Date.now() - i * 864e5));
+    var todos = await db.from("funcionarios").select("id,nome,escala_id,ativo").order("nome");
+    if (todos.error) throw todos.error;
+    var f = { data: todos.data.filter(function (x) { return x.ativo; }) };
+    var ativoSet = {}; f.data.forEach(function (x) { ativoSet[x.id] = 1; });
+    var b = await buscarTudo(function () { return db.from("batidas").select("id,funcionario_id,tipo,data,momento").gte("data", dias[0]).lte("data", d).order("momento"); });
+    var inv = await buscarTudo(function () { return db.from("batidas_invalidadas").select("batida_id"); });
+    var fer = await db.from("feriados").select("data,descricao").gte("data", dias[0]).lte("data", d);
+    var invSet = {}; inv.forEach(function (x) { invSet[x.batida_id] = 1; });
+    var ferMap = {}; (fer.data || []).forEach(function (x) { ferMap[x.data] = x.descricao; });
+    var validas = b.filter(function (x) { return !invSet[x.id]; });
+    var uteis = cfg.dias_uteis || [1, 2, 3, 4, 5], tol = cfg.tolerancia_min || 0;
+    function util(dt) { return uteis.indexOf(new Date(dt + "T12:00:00").getDay()) >= 0 && !ferMap[dt]; }
+
+    var ativos = f.data.length, hojeUtil = util(d);
+    var porHoje = {};
+    validas.filter(function (x) { return x.data === d; }).forEach(function (x) { (porHoje[x.funcionario_id] = porHoje[x.funcionario_id] || {})[x.tipo] = x.momento; });
+    var presentes = 0, atrasos = 0;
+    f.data.forEach(function (p) {
+      var m = porHoje[p.id];
+      if (!m) return;
+      presentes++;
+      var e = escalas.filter(function (x) { return x.id === p.escala_id; })[0];
+      if (m.entrada && e && e.entrada) {
+        var pr = e.entrada.split(":");
+        if (minLocal(m.entrada) > Number(pr[0]) * 60 + Number(pr[1]) + tol) atrasos++;
+      }
+    });
+    var semBatida = hojeUtil ? ativos - presentes : 0;
+    var taxa = (hojeUtil && ativos) ? Math.round(presentes / ativos * 100) + "%" : "—";
+    var batidasHoje = validas.filter(function (x) { return x.data === d; }).length;
+
+    var barras = dias.map(function (dt) {
+      var u = util(dt);
+      var ids = {}; validas.forEach(function (x) { if (x.data === dt && ativoSet[x.funcionario_id]) ids[x.funcionario_id] = 1; });
+      var n = Object.keys(ids).length, pct = (u && ativos) ? Math.round(n / ativos * 100) : 0;
+      var dd = dt.split("-"), dow = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"][new Date(dt + "T12:00:00").getDay()];
+      return '<div class="col"><span class="pct">' + (u ? pct + "%" : "") + '</span><div class="bar-wrap"><div class="bar' + (u ? "" : " off") + '" style="height:' + (u ? Math.max(pct, 2) : 4) + '%" title="' + (u ? n + " de " + ativos : (ferMap[dt] || "Não útil")) + '"></div></div><small>' + dow + "<br>" + dd[2] + "/" + dd[1] + "</small></div>";
     }).join("");
+
+    var nomes = {}; todos.data.forEach(function (x) { nomes[x.id] = x.nome; });
+    var ult = validas.slice().reverse().filter(function (x) { return nomes[x.funcionario_id]; }).slice(0, 8);
+    var ultHtml = ult.length ? '<ul class="list">' + ult.map(function (x) {
+      return '<li><div class="avatar">' + esc(iniciais(nomes[x.funcionario_id])) + '</div><div style="flex:1;min-width:0"><b>' + esc(nomes[x.funcionario_id]) + '</b><div class="muted" style="font-size:.82rem">' + NOMES[x.tipo] + " · " + (x.data === d ? "hoje" : dataBR(x.data)) + '</div></div><span class="tag blue">' + hora(x.momento) + "</span></li>";
+    }).join("") + "</ul>" : '<div class="empty">Nenhum registro nos últimos 7 dias.</div>';
+
+    function kpi(ic, cor, valor, rot) { return '<div class="card kpi"><div class="ic ' + cor + '"><i data-lucide="' + ic + '"></i></div><div><b>' + valor + "</b><span>" + rot + "</span></div></div>"; }
+    var aviso = hojeUtil ? "" : '<div class="msg warn"><i data-lucide="calendar-off"></i><div>Hoje não é dia útil' + (ferMap[d] ? " (" + esc(ferMap[d]) + ")" : "") + ": faltas e taxa de presença não são calculadas.</div></div>";
     $("main").innerHTML =
-      '<div class="grid">' +
-      '<div class="card kpi"><span class="muted">Funcionários ativos</span><b>' + f.data.length + "</b></div>" +
-      '<div class="card kpi"><span class="muted">Em andamento</span><b>' + presentes + "</b></div>" +
-      '<div class="card kpi"><span class="muted">Jornada completa</span><b>' + completos + "</b></div>" +
-      '<div class="card kpi"><span class="muted">Sem batida hoje</span><b>' + ausentes + "</b></div></div>" +
-      "<h3>Hoje, " + dataBR(d) + "</h3>" +
-      (f.data.length ? '<div class="scroll"><table><tr><th>Nome</th><th>Escala</th><th>Entrada</th><th>Saída almoço</th><th>Retorno</th><th>Saída</th><th>Situação</th></tr>' + linhas + "</table></div>"
-        : '<div class="card muted">Nenhum funcionário cadastrado ainda. Vá em <b>Funcionários › Novo funcionário</b>.</div>');
+      pageHead("layout-dashboard", "Dashboard", "Situação do ponto hoje, " + dataBR(d) + ".") + aviso +
+      '<div class="kpis">' +
+      kpi("users", "blue", ativos, "Funcionários ativos") +
+      kpi("user-check", "green", presentes, "Presentes hoje") +
+      kpi("user-x", "red", semBatida, "Sem batida até agora") +
+      kpi("alarm-clock", "amber", atrasos, "Atrasos hoje") +
+      kpi("gauge", "navy", taxa, "Taxa de presença") +
+      kpi("clock", "blue", batidasHoje, "Registros de ponto hoje") + "</div>" +
+      (ativos ? '<div class="two"><div class="card"><h3>Frequência dos últimos 7 dias</h3><div class="sub">Funcionários ativos com ao menos uma batida no dia. Dias não úteis em cinza.</div><div class="chart">' + barras + '</div></div>' +
+        '<div class="card"><h3>Últimos registros</h3><div class="sub">Batidas mais recentes da equipe.</div>' + ultHtml + "</div></div>"
+        : vazio("users", "Nenhum funcionário ativo ainda. Vá em Funcionários › Novo funcionário."));
   }
 
   /* ---------- Funcionários ---------- */
@@ -162,19 +234,20 @@
         : '<span class="tag off">Desligado' + (p.desligamento ? " em " + dataBR(p.desligamento) : "") + "</span>";
       var acoes = "";
       if (podeEditar()) {
-        if (p.ativo) acoes += '<button class="btn sec sm" data-a="edit" data-id="' + p.id + '">Editar</button> <button class="btn danger sm" data-a="rem" data-id="' + p.id + '">Remover</button>';
-        else acoes += '<button class="btn sec sm" data-a="react" data-id="' + p.id + '">Reativar</button>';
+        if (p.ativo) acoes += '<button class="btn sec sm" data-a="edit" data-id="' + p.id + '"><i data-lucide="pencil"></i> Editar</button> <button class="btn danger sm" data-a="rem" data-id="' + p.id + '"><i data-lucide="user-minus"></i> Remover</button>';
+        else acoes += '<button class="btn sec sm" data-a="react" data-id="' + p.id + '"><i data-lucide="user-check"></i> Reativar</button>';
       }
-      if (perfil === "admin") acoes += ' <button class="btn sec sm" data-a="del" data-id="' + p.id + '" title="Só funciona se nunca bateu ponto">Excluir cadastro</button>';
+      if (perfil === "admin") acoes += ' <button class="btn sec sm" data-a="del" data-id="' + p.id + '" title="Só funciona se nunca bateu ponto"><i data-lucide="trash-2"></i> Excluir cadastro</button>';
       return "<tr><td>" + esc(p.nome) + "</td><td>" + maskCpf(p.cpf) + "</td><td>" + esc(p.cargo || "") + "</td><td>" +
         esc(e ? e.nome + " (" + e.entrada + ")" : "") + "</td><td>" + st + (p.motivo_desligamento ? '<br><small class="muted">' + esc(p.motivo_desligamento) + "</small>" : "") + '</td><td class="act">' + acoes + "</td></tr>";
     }).join("");
     $("main").innerHTML =
-      '<div class="bar"><div class="grow"><b>Funcionários</b> <span class="muted">(' + r.data.length + ")</span></div>" +
-      '<label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" id="chkDes" style="width:auto"' + (mostrarDesligados ? " checked" : "") + "> Mostrar desligados</label>" +
-      (podeEditar() ? '<button class="btn" id="novo">+ Novo funcionário</button>' : "") + "</div>" +
+      pageHead("users", "Funcionários", "Cadastro da equipe. Quem sai da escola é removido (desligado) e o histórico de ponto continua guardado.",
+        (podeEditar() ? '<button class="btn" id="novo"><i data-lucide="user-plus"></i> Novo funcionário</button>' : "")) +
+      '<div class="bar-tools"><div class="grow muted">' + r.data.length + (r.data.length === 1 ? " funcionário" : " funcionários") + '</div>' +
+      '<label class="chk"><input type="checkbox" id="chkDes"' + (mostrarDesligados ? " checked" : "") + "> Mostrar desligados</label></div>" +
       (r.data.length ? '<div class="scroll"><table><tr><th>Nome</th><th>CPF</th><th>Cargo</th><th>Escala</th><th>Situação</th><th></th></tr>' + linhas + "</table></div>"
-        : '<div class="card muted">Nenhum funcionário' + (mostrarDesligados ? "" : " ativo") + ".</div>");
+        : vazio("users", "Nenhum funcionário" + (mostrarDesligados ? "" : " ativo") + " por aqui."));
     $("chkDes").addEventListener("change", function () { mostrarDesligados = this.checked; ir("func"); });
     if ($("novo")) $("novo").addEventListener("click", function () { formFunc(null); });
     var porId = {}; r.data.forEach(function (p) { porId[p.id] = p; });
@@ -241,7 +314,7 @@
             m.innerHTML = msgHtml(r.error.code === "23505" ? "Já existe um funcionário com este CPF (pode estar desligado: use Mostrar desligados › Reativar)." : "Erro: " + r.error.message);
             return;
           }
-          fechar(); ir("func");
+          fechar(); ir("func"); toast(novo ? "Funcionário cadastrado." : "Alterações salvas.");
         });
       });
   }
@@ -259,7 +332,7 @@
           var r = await db.rpc("desligar_funcionario", { p_id: p.id, p_data: root.querySelector("#rData").value || null, p_motivo: root.querySelector("#rMot").value });
           this.disabled = false;
           if (r.error || !r.data || !r.data.ok) { root.querySelector("#rMsg").innerHTML = msgHtml((r.data && r.data.erro) || (r.error && r.error.message) || "Erro."); return; }
-          fechar(); ir("func");
+          fechar(); ir("func"); toast(p.nome + " foi removido(a). O histórico foi mantido.");
         });
       });
   }
@@ -267,14 +340,14 @@
   async function reativar(p) {
     if (!confirm("Reativar " + p.nome + "? Ele voltará a bater ponto.")) return;
     var r = await db.rpc("reativar_funcionario", { p_id: p.id });
-    if (r.error || !r.data || !r.data.ok) { alert((r.data && r.data.erro) || (r.error && r.error.message)); return; }
-    ir("func");
+    if (r.error || !r.data || !r.data.ok) { toast((r.data && r.data.erro) || (r.error && r.error.message), true); return; }
+    ir("func"); toast(p.nome + " foi reativado(a).");
   }
   async function excluir(p) {
     if (!confirm("Excluir o cadastro de " + p.nome + " definitivamente?\n\nIsso só é permitido se a pessoa nunca bateu ponto. Para quem já trabalhou, use Remover.")) return;
     var r = await db.rpc("excluir_funcionario", { p_id: p.id });
-    if (r.error || !r.data || !r.data.ok) { alert((r.data && r.data.erro) || (r.error && r.error.message)); return; }
-    ir("func");
+    if (r.error || !r.data || !r.data.ok) { toast((r.data && r.data.erro) || (r.error && r.error.message), true); return; }
+    ir("func"); toast("Cadastro excluído.");
   }
 
   /* ---------- Registros ---------- */
@@ -292,14 +365,14 @@
       return "<tr" + (i ? ' style="opacity:.55"' : "") + "><td>" + esc(nomes[x.funcionario_id] || "?") + "</td><td>" + NOMES[x.tipo] + "</td><td>" + hora(x.momento) + "</td><td>" +
         (x.origem === "ajuste" ? '<span class="tag warn">Ajuste</span>' : '<span class="tag">Recepção</span>') + "</td><td>" +
         (i ? '<span class="tag err">Invalidada</span><br><small>' + esc(i.motivo) + "</small>" : (x.motivo ? "<small>" + esc(x.motivo) + "</small>" : "")) + '</td><td class="act">' +
-        (podeEditar() && !i ? '<button class="btn sec sm" data-inv="' + x.id + '">Invalidar</button>' : "") + "</td></tr>";
+        (podeEditar() && !i ? '<button class="btn sec sm" data-inv="' + x.id + '"><i data-lucide="ban"></i> Invalidar</button>' : "") + "</td></tr>";
     }).join("");
     $("main").innerHTML =
-      '<div class="bar"><div class="grow"><b>Registros de ponto</b></div><input type="date" id="rgD" value="' + regData + '" style="width:auto">' +
-      (podeEditar() ? '<button class="btn" id="rgAj">+ Lançar batida de ajuste</button>' : "") + "</div>" +
+      pageHead("clock", "Registros de ponto", "Batidas de cada dia. Para corrigir, invalide a batida com motivo e lance um ajuste.",
+        (podeEditar() ? '<button class="btn" id="rgAj"><i data-lucide="plus"></i> Lançar batida de ajuste</button>' : "")) +
+      '<div class="bar-tools"><label class="chk" for="rgD"><i data-lucide="calendar"></i> Dia</label><input type="date" id="rgD" value="' + regData + '"></div>' +
       (b.data.length ? '<div class="scroll"><table><tr><th>Funcionário</th><th>Tipo</th><th>Hora</th><th>Origem</th><th>Observação</th><th></th></tr>' + linhas + "</table></div>"
-        : '<div class="card muted">Nenhuma batida em ' + dataBR(regData) + ".</div>") +
-      '<p class="muted" style="font-size:.85rem">Batidas não são editadas nem apagadas. Para corrigir, invalide a batida com motivo e lance uma de ajuste.</p>';
+        : vazio("clock", "Nenhuma batida em " + dataBR(regData) + "."));
     $("rgD").addEventListener("change", function () { regData = this.value || hoje(); ir("reg"); });
     if ($("rgAj")) $("rgAj").addEventListener("click", function () { formAjuste(f.data); });
     $("main").querySelectorAll("[data-inv]").forEach(function (bt) {
@@ -347,11 +420,12 @@
     if (f.error) throw f.error;
     var mes = hoje().slice(0, 7);
     $("main").innerHTML =
-      '<div class="bar"><div class="grow"><b>Relatórios</b></div>' +
-      '<input type="month" id="rM" value="' + mes + '" style="width:auto">' +
-      '<select id="rF" style="width:auto;max-width:260px"><option value="0">Todos (consolidado)</option>' +
+      pageHead("file-text", "Relatórios", "Horas trabalhadas, extras, devidas, faltas e saldo por mês, em PDF ou impressão.") +
+      '<div class="bar-tools">' +
+      '<input type="month" id="rM" value="' + mes + '">' +
+      '<select id="rF" style="max-width:280px"><option value="0">Todos (consolidado)</option>' +
       f.data.map(function (x) { return '<option value="' + x.id + '">' + esc(x.nome) + (x.ativo ? "" : " (desligado)") + "</option>"; }).join("") + "</select>" +
-      '<button class="btn" id="rG">Gerar</button><button class="btn sec hidden" id="rP">Imprimir / PDF</button></div>' +
+      '<button class="btn" id="rG"><i data-lucide="play"></i> Gerar</button><button class="btn sec hidden" id="rP"><i data-lucide="printer"></i> Imprimir / PDF</button></div>' +
       '<div id="rOut"></div>';
     $("rG").addEventListener("click", function () { gerar(f.data); });
     $("rP").addEventListener("click", function () { window.print(); });
@@ -375,7 +449,7 @@
   async function gerar(funcs) {
     var ym = $("rM").value, fid = Number($("rF").value);
     if (!ym) return;
-    $("rOut").innerHTML = '<p class="muted">Calculando…</p>';
+    $("rOut").innerHTML = '<div class="skel" style="height:160px"></div>';
     var dias = diasDoMes(ym), ini = dias[0], fim = dias[dias.length - 1];
     var bs = await buscarTudo(function () { return db.from("batidas").select("id,funcionario_id,tipo,data,momento").gte("data", ini).lte("data", fim).order("momento"); });
     var inv = await buscarTudo(function () { return db.from("batidas_invalidadas").select("batida_id"); });
@@ -395,7 +469,7 @@
         var dow = new Date(d + "T12:00:00").getDay();
         var util = uteis.indexOf(dow) >= 0 && !ferMap[d];
         var bd = meus.filter(function (b) { return b.data === d; });
-        var trab = minutosDia(bd), completo = bd.length >= 4 || (bd.length >= 2 && trab > 0);
+        var trab = minutosDia(bd), completo = bd.some(function (x) { return x.tipo === "saida"; });
         var extra = 0, dev = 0, obs = ferMap[d] || (util ? "" : "Não útil");
         if (bd.length === 0) {
           if (util) { dev = C.jornadaMin; res.faltas++; obs = "Falta"; }
@@ -414,7 +488,7 @@
       return res;
     });
 
-    var cab = '<div class="printonly"><h2>' + esc(C.escola) + " — Relatório de ponto</h2></div>";
+    var cab = '<div class="printonly"><img src="img/logo.png" alt=""><h2>Relatório de ponto — ' + esc(C.escola) + "</h2></div>";
     var html = cab + "<p class=\"muted\">Período: " + dataBR(ini) + " a " + dataBR(fim) + " · Jornada: " + hm(C.jornadaMin) + " · Tolerância: " + tol + " min</p>";
     if (!fid) {
       html += '<div class="scroll"><table><tr><th>Funcionário</th><th>Dias trabalhados</th><th>Horas trabalhadas</th><th>Extras</th><th>Devidas</th><th>Faltas</th><th>Saldo</th></tr>' +
@@ -436,6 +510,7 @@
     html += '<p class="muted" style="font-size:.8rem">Controle interno, não é registro de ponto homologado (Portaria MTP 671/2021). Ocorrências e abonos ainda não são considerados neste cálculo.</p>';
     $("rOut").innerHTML = html;
     $("rP").classList.remove("hidden");
+    icones();
   }
 
   iniciarSessao();

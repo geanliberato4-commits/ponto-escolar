@@ -11,7 +11,6 @@
   };
   var cpfAtual = "", proxima = null, timer = null;
 
-  $("escola").textContent = C.escola;
 
   function relogio() {
     var d = new Date();
@@ -29,8 +28,10 @@
     $("msg").appendChild(d);
   }
 
+  function icones() { try { if (window.lucide) lucide.createIcons(); } catch (e) {} }
   function mostrar(qual) {
     ["s1", "s2", "s3"].forEach(function (s) { $(s).classList.toggle("hidden", s !== qual); });
+    icones();
   }
 
   function mascara(v) {
@@ -93,7 +94,7 @@
       var d = r.data;
       if (!d.ok) { msg(d.erro); mostrar("s1"); cpfAtual = ""; return; }
       var hora = new Date(d.momento).toLocaleTimeString("pt-BR", { timeZone: TZ, hour: "2-digit", minute: "2-digit", second: "2-digit" });
-      $("done").textContent = "✔ " + (NOMES[d.tipo] || d.tipo) + " registrada";
+      $("done").textContent = (NOMES[d.tipo] || d.tipo) + " registrada";
       $("doneSub").textContent = d.nome + " · " + hora;
       mostrar("s3");
       timer = setTimeout(reiniciar, 5000);
@@ -101,6 +102,7 @@
     finally { $("confirm").disabled = false; }
   }
 
+  icones();
   $("ok").addEventListener("click", identificar);
   $("confirm").addEventListener("click", registrar);
   $("cancel").addEventListener("click", reiniciar);
