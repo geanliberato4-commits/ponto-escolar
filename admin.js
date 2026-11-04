@@ -7,7 +7,6 @@
   var NOMES = { entrada: "Entrada", almoco_saida: "Saída almoço", almoco_retorno: "Retorno almoço", saida: "Saída" };
   var perfil = null, meuEmail = "", escalas = [], cfg = { tolerancia_min: 5, dias_uteis: [1, 2, 3, 4, 5] };
   var aba = "dash";
-  var mostrarDesligados = false;
 
   /* ---------- utilidades ---------- */
   function esc(s) {
@@ -140,7 +139,7 @@
     aba = t;
     $("appView").classList.remove("open");
     document.querySelectorAll("#tabs button").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-t") === t); });
-    var f = { dash: telaDash, func: telaFunc, reg: telaReg, rel: telaRel }[t];
+    var f = { dash: telaDash, func: telaFunc, ex: telaEx, reg: telaReg, ocor: telaOcor, banco: telaBanco, rel: telaRel, esc: telaEsc, cfg: telaCfg }[t];
     $("main").innerHTML = esqueleto();
     f().then(icones).catch(function (e) {
       $("main").innerHTML = '<div class="msg err"><i data-lucide="alert-triangle"></i><div>Não foi possível carregar esta tela. ' + esc(e.message || e) + '<br><button class="btn sec sm" id="tentar" style="margin-top:8px">Tentar de novo</button></div></div>';
@@ -192,7 +191,9 @@
     var taxa = (hojeUtil && ativos) ? Math.round(presentes / ativos * 100) + "%" : "—";
     var batidasHoje = validas.filter(function (x) { return x.data === d; }).length;
 
-    var barras = dias.map(function (dt) {
+    var pri = await primeiraBatida();
+    var diasGraf = dias.filter(function (dt) { return pri && dt >= pri; });
+    var barras = diasGraf.map(function (dt) {
       var u = util(dt);
       var ids = {}; validas.forEach(function (x) { if (x.data === dt && ativoSet[x.funcionario_id]) ids[x.funcionario_id] = 1; });
       var n = Object.keys(ids).length, pct = (u && ativos) ? Math.round(n / ativos * 100) : 0;
@@ -217,38 +218,45 @@
       kpi("alarm-clock", "amber", atrasos, "Atrasos hoje") +
       kpi("gauge", "navy", taxa, "Taxa de presença") +
       kpi("clock", "blue", batidasHoje, "Registros de ponto hoje") + "</div>" +
-      (ativos ? '<div class="two"><div class="card"><h3>Frequência dos últimos 7 dias</h3><div class="sub">Funcionários ativos com ao menos uma batida no dia. Dias não úteis em cinza.</div><div class="chart">' + barras + '</div></div>' +
+      (ativos ? '<div class="two"><div class="card"><h3>Frequência dos últimos 7 dias</h3><div class="sub">Funcionários ativos com ao menos uma batida no dia. Dias não úteis em cinza.</div><div class="chart">' + (barras || '<div class="empty">O gráfico começa no primeiro dia com registros.</div>') + '</div></div>' +
         '<div class="card"><h3>Últimos registros</h3><div class="sub">Batidas mais recentes da equipe.</div>' + ultHtml + "</div></div>"
         : vazio("users", "Nenhum funcionário ativo ainda. Vá em Funcionários › Novo funcionário."));
   }
 
   /* ---------- Funcionários ---------- */
-  async function telaFunc() {
-    var q = db.from("funcionarios").select("*").order("nome");
-    if (!mostrarDesligados) q = q.eq("ativo", true);
-    var r = await q;
+  var pinsSet = {};
+  async function carregarPins() {
+    var r = await db.rpc("pins_cadastrados");
+    pinsSet = {};
+    (r.data || []).forEach(function (id) { pinsSet[id] = 1; });
+  }
+  async function telaFunc() { return listaFunc(true); }
+  async function telaEx() { return listaFunc(false); }
+
+  async function listaFunc(ativos) {
+    var r = await db.from("funcionarios").select("*").eq("ativo", ativos).order("nome");
     if (r.error) throw r.error;
+    await carregarPins();
     var linhas = r.data.map(function (p) {
       var e = escalas.filter(function (x) { return x.id === p.escala_id; })[0];
-      var st = p.ativo ? '<span class="tag ok">Ativo</span>'
-        : '<span class="tag off">Desligado' + (p.desligamento ? " em " + dataBR(p.desligamento) : "") + "</span>";
       var acoes = "";
       if (podeEditar()) {
-        if (p.ativo) acoes += '<button class="btn sec sm" data-a="edit" data-id="' + p.id + '"><i data-lucide="pencil"></i> Editar</button> <button class="btn danger sm" data-a="rem" data-id="' + p.id + '"><i data-lucide="user-minus"></i> Remover</button>';
+        if (ativos) acoes += '<button class="btn sec sm" data-a="pin" data-id="' + p.id + '" title="Definir PIN"><i data-lucide="key-round"></i> PIN</button> <button class="btn sec sm" data-a="dig" data-id="' + p.id + '" title="Digital"><i data-lucide="fingerprint"></i> Digital</button> <button class="btn sec sm" data-a="edit" data-id="' + p.id + '"><i data-lucide="pencil"></i> Editar</button> <button class="btn danger sm" data-a="rem" data-id="' + p.id + '"><i data-lucide="user-minus"></i> Remover</button>';
         else acoes += '<button class="btn sec sm" data-a="react" data-id="' + p.id + '"><i data-lucide="user-check"></i> Reativar</button>';
       }
-      if (perfil === "admin") acoes += ' <button class="btn sec sm" data-a="del" data-id="' + p.id + '" title="Só funciona se nunca bateu ponto"><i data-lucide="trash-2"></i> Excluir cadastro</button>';
+      var acesso = ativos
+        ? (pinsSet[p.id] ? '<span class="tag ok">PIN</span> ' : '<span class="tag warn">Sem PIN</span> ') + (p.digitais > 0 ? '<span class="tag blue">' + p.digitais + " digital" + (p.digitais > 1 ? "is" : "") + "</span>" : "")
+        : '<span class="tag off">Desligado' + (p.desligamento ? " em " + dataBR(p.desligamento) : "") + "</span>" + (p.motivo_desligamento ? '<br><small class="muted">' + esc(p.motivo_desligamento) + "</small>" : "");
       return "<tr><td>" + esc(p.nome) + "</td><td>" + maskCpf(p.cpf) + "</td><td>" + esc(p.cargo || "") + "</td><td>" +
-        esc(e ? e.nome + " (" + e.entrada + ")" : "") + "</td><td>" + st + (p.motivo_desligamento ? '<br><small class="muted">' + esc(p.motivo_desligamento) + "</small>" : "") + '</td><td class="act">' + acoes + "</td></tr>";
+        esc(e ? e.nome + " (" + e.entrada + ")" : "") + "</td><td>" + acesso + '</td><td class="act">' + acoes + "</td></tr>";
     }).join("");
     $("main").innerHTML =
-      pageHead("users", "Funcionários", "Cadastro da equipe. Quem sai da escola é removido (desligado) e o histórico de ponto continua guardado.",
-        (podeEditar() ? '<button class="btn" id="novo"><i data-lucide="user-plus"></i> Novo funcionário</button>' : "")) +
-      '<div class="bar-tools"><div class="grow muted">' + r.data.length + (r.data.length === 1 ? " funcionário" : " funcionários") + '</div>' +
-      '<label class="chk"><input type="checkbox" id="chkDes"' + (mostrarDesligados ? " checked" : "") + "> Mostrar desligados</label></div>" +
-      (r.data.length ? '<div class="scroll"><table><tr><th>Nome</th><th>CPF</th><th>Cargo</th><th>Escala</th><th>Situação</th><th></th></tr>' + linhas + "</table></div>"
-        : vazio("users", "Nenhum funcionário" + (mostrarDesligados ? "" : " ativo") + " por aqui."));
-    $("chkDes").addEventListener("change", function () { mostrarDesligados = this.checked; ir("func"); });
+      pageHead(ativos ? "users" : "archive", ativos ? "Funcionários" : "Ex-funcionários",
+        ativos ? "Cadastro da equipe. Quem sai da escola é removido (desligado) e o histórico de ponto continua guardado." : "Pessoas desligadas. O histórico delas continua guardado e dá para reativar.",
+        (ativos && podeEditar() ? '<button class="btn" id="novo"><i data-lucide="user-plus"></i> Novo funcionário</button>' : "")) +
+      '<div class="bar-tools"><div class="grow muted">' + r.data.length + (r.data.length === 1 ? " pessoa" : " pessoas") + "</div></div>" +
+      (r.data.length ? '<div class="scroll"><table><tr><th>Nome</th><th>CPF</th><th>Cargo</th><th>Escala</th><th>' + (ativos ? "Acesso ao ponto" : "Situação") + "</th><th></th></tr>" + linhas + "</table></div>"
+        : vazio("users", ativos ? "Nenhum funcionário ativo por aqui." : "Nenhum ex-funcionário."));
     if ($("novo")) $("novo").addEventListener("click", function () { formFunc(null); });
     var porId = {}; r.data.forEach(function (p) { porId[p.id] = p; });
     $("main").querySelectorAll("[data-a]").forEach(function (b) {
@@ -257,9 +265,68 @@
         if (a === "edit") formFunc(p);
         if (a === "rem") formRemover(p);
         if (a === "react") reativar(p);
-        if (a === "del") excluir(p);
+        if (a === "pin") formPin(p);
+        if (a === "dig") formDigital(p);
       });
     });
+  }
+
+  function formPin(p, aoSalvar) {
+    modal("<h2>PIN de " + esc(p.nome) + "</h2><p class=\"muted\">O PIN (4 a 6 números) é pessoal e vai junto com o CPF na recepção. Ele é guardado criptografado: nem a direção consegue ver depois.</p>" +
+      '<label>Novo PIN</label><input id="pN" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password">' +
+      '<label>Repita o PIN</label><input id="pN2" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password"><div id="pMsg"></div>' +
+      '<div class="acts"><button class="btn sec" data-fechar>Cancelar</button><button class="btn" id="pOk">Salvar PIN</button></div>',
+      function (root, fechar) {
+        root.querySelector("#pOk").addEventListener("click", async function () {
+          var a = root.querySelector("#pN").value, b = root.querySelector("#pN2").value, m = root.querySelector("#pMsg");
+          if (!/^\d{4,6}$/.test(a)) { m.innerHTML = msgHtml("O PIN deve ter de 4 a 6 números."); return; }
+          if (a !== b) { m.innerHTML = msgHtml("Os dois PINs não são iguais."); return; }
+          this.disabled = true;
+          var r = await db.rpc("definir_pin", { p_id: p.id, p_pin: a });
+          this.disabled = false;
+          if (r.error || !r.data || !r.data.ok) { m.innerHTML = msgHtml((r.data && r.data.erro) || (r.error && r.error.message) || "Erro."); return; }
+          fechar(); toast("PIN salvo."); if (aoSalvar) aoSalvar(); else ir(aba);
+        });
+      });
+  }
+
+  function formDigital(p) {
+    var agente = Bio.criar(C.agente);
+    var DEDOS = ["Polegar direito", "Indicador direito", "Médio direito", "Anelar direito", "Mínimo direito", "Polegar esquerdo", "Indicador esquerdo", "Médio esquerdo", "Anelar esquerdo", "Mínimo esquerdo"];
+    modal("<h2>Digital de " + esc(p.nome) + "</h2>" +
+      '<p class="muted">Cada pessoa pode ter até 2 digitais (ex.: os dois indicadores). Este computador precisa estar com o leitor conectado e o programa do leitor aberto.</p>' +
+      '<div id="dSt" class="msg warn">Verificando o leitor…</div>' +
+      '<p>Digitais cadastradas: <b id="dQtd">' + (p.digitais || 0) + "</b></p>" +
+      '<label>Dedo</label><select id="dDedo">' + DEDOS.map(function (n, i) { return '<option value="' + (i === 1 ? 6 : i === 6 ? 1 : i) + '">' + n + "</option>"; }).join("") + "</select>" +
+      '<div id="dMsg"></div><div class="acts"><button class="btn danger" id="dRem"><i data-lucide="trash-2"></i> Remover digitais</button><button class="btn sec" data-fechar>Fechar</button><button class="btn" id="dCap" disabled><i data-lucide="fingerprint"></i> Capturar</button></div>',
+      function (root) {
+        var st = root.querySelector("#dSt"), cap = root.querySelector("#dCap"), m = root.querySelector("#dMsg");
+        root.querySelector("#dDedo").value = "1";
+        agente.status().then(function (s) {
+          if (s.conectado) { st.className = "msg ok"; st.textContent = "Leitor conectado" + (s.leitor ? ": " + s.leitor : "") + "."; cap.disabled = false; }
+          else { st.className = "msg err"; st.textContent = "Leitor não encontrado. Conecte o leitor e abra o programa do leitor neste computador."; }
+        });
+        cap.addEventListener("click", async function () {
+          this.disabled = true;
+          m.innerHTML = msgHtml("Coloque o mesmo dedo no leitor 3 vezes, soltando entre as leituras…", "warn");
+          var r = await agente.cadastrar();
+          if (!r.ok || !r.template) { m.innerHTML = msgHtml(r.erro === "agente_indisponivel" ? "O programa do leitor não respondeu." : "Não foi possível ler a digital. Tente de novo."); this.disabled = false; return; }
+          var s = await db.rpc("bio_salvar_digital", { p_funcionario_id: p.id, p_dedo: Number(root.querySelector("#dDedo").value), p_template: r.template });
+          this.disabled = false;
+          if (s.error || !s.data || !s.data.ok) { m.innerHTML = msgHtml((s.data && s.data.erro) || (s.error && s.error.message) || "Erro."); return; }
+          var q = root.querySelector("#dQtd"); q.textContent = String(Number(q.textContent) + 1 > 2 ? 2 : Number(q.textContent) + 1);
+          m.innerHTML = msgHtml("Digital cadastrada.", "ok");
+        });
+        root.querySelector("#dRem").addEventListener("click", async function () {
+          if (!confirm("Remover todas as digitais de " + p.nome + "?")) return;
+          var r = await db.rpc("bio_remover_digitais", { p_funcionario_id: p.id });
+          if (r.error || (r.data && r.data.ok === false)) { m.innerHTML = msgHtml("Não foi possível remover: " + ((r.data && r.data.erro) || (r.error && r.error.message))); return; }
+          root.querySelector("#dQtd").textContent = "0"; m.innerHTML = msgHtml("Digitais removidas.", "ok");
+        });
+      });
+    // atualiza a lista ao fechar
+    var obs = new MutationObserver(function () { if (!$("modalRoot").innerHTML) { obs.disconnect(); if (aba === "func") ir("func"); } });
+    obs.observe($("modalRoot"), { childList: true });
   }
 
   function opcoesEscala(sel) {
@@ -277,15 +344,19 @@
       '<label>Cargo</label><input id="fCargo" value="' + esc(p ? p.cargo || "" : "") + '">' +
       '<label>Data de admissão</label><input id="fAdm" type="date" value="' + (p && p.admissao ? p.admissao : "") + '">' +
       '<label>Escala</label><select id="fEsc">' + opcoesEscala(p ? p.escala_id : 1) + "</select>" +
+      (novo ? '<label>PIN de acesso (4 a 6 números)</label><input id="fPin" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password"><small class="muted">Pode ser definido depois, em Funcionários › PIN. Sem PIN a pessoa não consegue bater ponto.</small>' : "") +
       (novo ? "" : '<div id="boxMotivo" class="hidden"><label>Motivo da troca de escala (obrigatório)</label><input id="fMot"></div>') +
-      '<div id="fMsg"></div><div class="acts"><button class="btn sec" data-fechar>Cancelar</button><button class="btn" id="fSalvar">Salvar</button></div>',
+      '<div id="fMsg"></div><div class="acts">' + (!novo && perfil === "admin" ? '<button class="btn ghost-danger" id="fExc" title="Só funciona se a pessoa nunca bateu ponto"><i data-lucide="trash-2"></i> Excluir cadastro</button>' : "") + '<button class="btn sec" data-fechar>Cancelar</button><button class="btn" id="fSalvar">Salvar</button></div>',
       function (root, fechar) {
         var cpfEl = root.querySelector("#fCpf");
         cpfEl.addEventListener("input", function () { if (!cpfEl.disabled) cpfEl.value = maskCpf(cpfEl.value.replace(/\D/g, "").slice(0, 11)).replace(/[.-]$/, ""); });
         if (!novo) root.querySelector("#fEsc").addEventListener("change", function () {
           root.querySelector("#boxMotivo").classList.toggle("hidden", Number(this.value) === p.escala_id);
         });
+        if (!novo && root.querySelector("#fExc")) root.querySelector("#fExc").addEventListener("click", function () { fechar(); excluir(p); });
         root.querySelector("#fSalvar").addEventListener("click", async function () {
+          var pinNovo = novo ? root.querySelector("#fPin").value : "";
+          if (novo && pinNovo && !/^\d{4,6}$/.test(pinNovo)) { root.querySelector("#fMsg").innerHTML = msgHtml("O PIN deve ter de 4 a 6 números."); return; }
           var nome = root.querySelector("#fNome").value.trim();
           var cpf = cpfEl.value.replace(/\D/g, "");
           var m = root.querySelector("#fMsg");
@@ -314,7 +385,9 @@
             m.innerHTML = msgHtml(r.error.code === "23505" ? "Já existe um funcionário com este CPF (pode estar desligado: use Mostrar desligados › Reativar)." : "Erro: " + r.error.message);
             return;
           }
-          fechar(); ir("func"); toast(novo ? "Funcionário cadastrado." : "Alterações salvas.");
+          var avisoPin = "";
+          if (novo && pinNovo) { var rp = await db.rpc("definir_pin", { p_id: r.data.id, p_pin: pinNovo }); if (rp.error || !rp.data || !rp.data.ok) avisoPin = " Mas o PIN não foi salvo: defina em PIN."; }
+          fechar(); ir("func"); toast((novo ? "Funcionário cadastrado." : "Alterações salvas.") + avisoPin, !!avisoPin);
         });
       });
   }
@@ -414,103 +487,334 @@
       });
   }
 
+  /* ---------- dados compartilhados (relatório, banco de horas) ---------- */
+  var TIPOS_OC = Calc.TIPOS_OCORRENCIA;
+  function diasDoMes(ym) {
+    var p = ym.split("-"), n = new Date(Number(p[0]), Number(p[1]), 0).getDate(), out = [];
+    for (var d = 1; d <= n; d++) out.push(ym + "-" + String(d).padStart(2, "0"));
+    return out;
+  }
+  async function carregarPeriodo(ini, fim) {
+    var bs = await buscarTudo(function () { return db.from("batidas").select("id,funcionario_id,tipo,data,momento").gte("data", ini).lte("data", fim).order("momento"); });
+    var inv = await buscarTudo(function () { return db.from("batidas_invalidadas").select("batida_id"); });
+    var fer = await db.from("feriados").select("data,descricao").gte("data", ini).lte("data", fim);
+    var oc = await buscarTudo(function () { return db.from("ocorrencias").select("*").eq("status", "aprovada").lte("data_inicio", fim).order("id"); });
+    var invSet = {}; inv.forEach(function (i) { invSet[i.batida_id] = 1; });
+    var ferMap = {}; (fer.data || []).forEach(function (x) { ferMap[x.data] = x.descricao; });
+    return {
+      batidas: bs.filter(function (b) { return !invSet[b.id]; }), feriados: ferMap,
+      ocorrencias: oc.filter(function (o) { return (o.data_fim || o.data_inicio) >= ini; })
+    };
+  }
+  function calcular(p, ini, fim, dados) {
+    return Calc.calcularFuncionario(p, ini, fim, {
+      hoje: hoje(), tol: cfg.tolerancia_min || 0, uteis: cfg.dias_uteis || [1, 2, 3, 4, 5], feriados: dados.feriados, jornada: C.jornadaMin,
+      batidas: dados.batidas.filter(function (b) { return b.funcionario_id === p.id; }),
+      ocorrencias: dados.ocorrencias.filter(function (o) { return o.funcionario_id === p.id; })
+    });
+  }
+  async function primeiraBatida() {
+    var r = await db.from("batidas").select("data").order("data").limit(1);
+    return r.data && r.data[0] ? r.data[0].data : null;
+  }
+  function baixarCsv(nome, linhas) {
+    var txt = "﻿" + linhas.map(function (l) {
+      return l.map(function (c) { c = String(c == null ? "" : c); return /[;"\n]/.test(c) ? '"' + c.replace(/"/g, '""') + '"' : c; }).join(";");
+    }).join("\r\n");
+    baixar(nome, txt, "text/csv;charset=utf-8");
+  }
+  function baixar(nome, txt, tipo) {
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([txt], { type: tipo }));
+    a.download = nome; document.body.appendChild(a); a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+
+  /* ---------- Ocorrências ---------- */
+  async function telaOcor() {
+    var f = await db.from("funcionarios").select("id,nome,ativo").order("nome");
+    var o = await db.from("ocorrencias").select("*").order("data_inicio", { ascending: false }).limit(300);
+    if (f.error || o.error) throw (f.error || o.error);
+    var nomes = {}; f.data.forEach(function (x) { nomes[x.id] = x.nome; });
+    var ST = { pendente: '<span class="tag warn">Pendente</span>', aprovada: '<span class="tag ok">Aprovada</span>', rejeitada: '<span class="tag err">Rejeitada</span>' };
+    var linhas = o.data.map(function (x) {
+      var t = TIPOS_OC[x.tipo] || { rotulo: x.tipo };
+      var per = dataBR(x.data_inicio) + (x.data_fim && x.data_fim !== x.data_inicio ? " a " + dataBR(x.data_fim) : "");
+      var ac = (perfil === "admin" && x.status === "pendente")
+        ? '<button class="btn sm" data-ap="' + x.id + '"><i data-lucide="check"></i> Aprovar</button> <button class="btn danger sm" data-rj="' + x.id + '"><i data-lucide="x"></i> Rejeitar</button>' : "";
+      return "<tr><td>" + esc(nomes[x.funcionario_id] || "?") + "</td><td>" + esc(t.rotulo) + "</td><td>" + per + "</td><td>" + (x.minutos ? hm(x.minutos) : "") + "</td><td>" + esc(x.descricao || "") + "</td><td>" + (ST[x.status] || x.status) + '</td><td class="act">' + ac + "</td></tr>";
+    }).join("");
+    $("main").innerHTML =
+      pageHead("file-check", "Ocorrências e abonos", "Atestados, faltas justificadas, folgas por banco de horas e abonos. Só as aprovadas pelo administrador entram nos cálculos.",
+        (podeEditar() ? '<button class="btn" id="oNova"><i data-lucide="plus"></i> Nova ocorrência</button>' : "")) +
+      (o.data.length ? '<div class="scroll"><table><tr><th>Funcionário</th><th>Tipo</th><th>Período</th><th>Minutos</th><th>Descrição</th><th>Situação</th><th></th></tr>' + linhas + "</table></div>"
+        : vazio("file-check", "Nenhuma ocorrência registrada."));
+    if ($("oNova")) $("oNova").addEventListener("click", function () { formOcor(f.data.filter(function (x) { return x.ativo; })); });
+    async function decidir(id, st) {
+      var r = await db.from("ocorrencias").update({ status: st }).eq("id", id);
+      if (r.error) { toast(r.error.message, true); return; }
+      await db.from("auditoria").insert({ acao: "ocorrencia." + st, detalhe: { id: id } });
+      ir("ocor"); toast(st === "aprovada" ? "Ocorrência aprovada." : "Ocorrência rejeitada.");
+    }
+    $("main").querySelectorAll("[data-ap]").forEach(function (b) { b.addEventListener("click", function () { decidir(Number(b.getAttribute("data-ap")), "aprovada"); }); });
+    $("main").querySelectorAll("[data-rj]").forEach(function (b) { b.addEventListener("click", function () { decidir(Number(b.getAttribute("data-rj")), "rejeitada"); }); });
+  }
+  function formOcor(funcs) {
+    modal("<h2>Nova ocorrência</h2>" +
+      '<label>Funcionário</label><select id="oF">' + funcs.map(function (x) { return '<option value="' + x.id + '">' + esc(x.nome) + "</option>"; }).join("") + "</select>" +
+      '<label>Tipo</label><select id="oT">' + Object.keys(TIPOS_OC).map(function (k) { return '<option value="' + k + '">' + esc(TIPOS_OC[k].rotulo) + "</option>"; }).join("") + "</select>" +
+      '<div class="row2"><div><label>De</label><input type="date" id="oI" value="' + hoje() + '"></div><div><label>Até</label><input type="date" id="oFim" value="' + hoje() + '"></div></div>' +
+      '<div id="oBoxMin" class="hidden"><label>Minutos abonados</label><input type="number" id="oMin" min="1" max="600" placeholder="Ex.: 30"></div>' +
+      '<label>Descrição / motivo (obrigatório)</label><input id="oD" placeholder="Ex.: atestado do Dr. Fulano, CID não informado"><div id="oMsg"></div>' +
+      '<p class="muted" style="font-size:.82rem">' + (perfil === "admin" ? "Como administrador, a ocorrência já entra aprovada." : "Ficará pendente até o administrador aprovar.") + "</p>" +
+      '<div class="acts"><button class="btn sec" data-fechar>Cancelar</button><button class="btn" id="oOk">Salvar</button></div>',
+      function (root, fechar) {
+        var tp = root.querySelector("#oT");
+        function ajusta() { root.querySelector("#oBoxMin").classList.toggle("hidden", TIPOS_OC[tp.value].efeito !== "minutos"); }
+        tp.addEventListener("change", ajusta); ajusta();
+        root.querySelector("#oOk").addEventListener("click", async function () {
+          var m = root.querySelector("#oMsg"), ini = root.querySelector("#oI").value, fim = root.querySelector("#oFim").value || ini;
+          var desc = root.querySelector("#oD").value.trim(), min = Number(root.querySelector("#oMin").value) || null;
+          if (!ini || fim < ini) { m.innerHTML = msgHtml("Confira as datas."); return; }
+          if (desc.length < 3) { m.innerHTML = msgHtml("Informe a descrição."); return; }
+          if (TIPOS_OC[tp.value].efeito === "minutos" && !min) { m.innerHTML = msgHtml("Informe os minutos."); return; }
+          this.disabled = true;
+          var r = await db.from("ocorrencias").insert({ funcionario_id: Number(root.querySelector("#oF").value), tipo: tp.value, data_inicio: ini, data_fim: fim, minutos: min, descricao: desc, status: perfil === "admin" ? "aprovada" : "pendente" });
+          this.disabled = false;
+          if (r.error) { m.innerHTML = msgHtml(r.error.message); return; }
+          fechar(); ir("ocor"); toast("Ocorrência registrada.");
+        });
+      });
+  }
+
+  /* ---------- Banco de horas ---------- */
+  async function telaBanco() {
+    var mes = hoje().slice(0, 7);
+    $("main").innerHTML =
+      pageHead("piggy-bank", "Banco de horas", "Saldo acumulado de cada funcionário: extras menos horas devidas, desde a primeira batida no sistema.") +
+      '<div class="bar-tools"><label class="chk" for="bM">Até o fim de</label><input type="month" id="bM" value="' + mes + '"><button class="btn" id="bG"><i data-lucide="play"></i> Calcular</button><button class="btn sec hidden" id="bX"><i data-lucide="download"></i> Exportar Excel (CSV)</button></div><div id="bOut"></div>';
+    var linhasCsv = [];
+    $("bG").addEventListener("click", async function () {
+      var ym = $("bM").value; if (!ym) return;
+      $("bOut").innerHTML = '<div class="skel" style="height:160px"></div>';
+      var dm = diasDoMes(ym), iniMes = dm[0], fimMes = dm[dm.length - 1], pri = await primeiraBatida();
+      var f = await db.from("funcionarios").select("id,nome,cpf,cargo,admissao,ativo,desligamento").eq("ativo", true).order("nome");
+      if (f.error) throw f.error;
+      if (!pri) { $("bOut").innerHTML = vazio("piggy-bank", "Ainda não há batidas registradas."); return; }
+      var dados = await carregarPeriodo(pri, fimMes);
+      var corpo = "";
+      linhasCsv = [["Funcionário", "Saldo anterior", "Extras do mês", "Devidas do mês", "Saldo do mês", "Saldo acumulado"]];
+      f.data.forEach(function (p) {
+        var r = calcular(p, pri, fimMes, dados), ant = 0, mesE = 0, mesD = 0;
+        r.dias.forEach(function (d) {
+          if (d.d < iniMes) ant += d.extra - d.dev; else { mesE += d.extra; mesD += d.dev; }
+        });
+        var sm = mesE - mesD, ac = ant + sm;
+        corpo += "<tr><td>" + esc(p.nome) + "</td><td>" + hm(ant) + '</td><td class="pos">' + hm(mesE) + '</td><td class="neg">' + hm(mesD) + "</td><td>" + hm(sm) + '</td><td class="' + (ac < 0 ? "neg" : "pos") + '"><b>' + hm(ac) + "</b></td></tr>";
+        linhasCsv.push([p.nome, hm(ant), hm(mesE), hm(mesD), hm(sm), hm(ac)]);
+      });
+      $("bOut").innerHTML = '<div class="scroll"><table><tr><th>Funcionário</th><th>Saldo anterior</th><th>Extras do mês</th><th>Devidas do mês</th><th>Saldo do mês</th><th>Saldo acumulado</th></tr>' + corpo + "</table></div>" +
+        '<p class="muted" style="font-size:.8rem">Contagem a partir de ' + dataBR(pri) + " (primeira batida no sistema) ou da admissão, o que for mais recente. Folgas por banco de horas devem ser lançadas em Ocorrências.</p>";
+      $("bX").classList.remove("hidden"); icones();
+    });
+    $("bX").addEventListener("click", function () { baixarCsv("banco-de-horas-" + $("bM").value + ".csv", linhasCsv); });
+  }
+
   /* ---------- Relatórios ---------- */
   async function telaRel() {
     var f = await db.from("funcionarios").select("id,nome,cpf,cargo,admissao,ativo,desligamento").order("nome");
     if (f.error) throw f.error;
     var mes = hoje().slice(0, 7);
     $("main").innerHTML =
-      pageHead("file-text", "Relatórios", "Horas trabalhadas, extras, devidas, faltas e saldo por mês, em PDF ou impressão.") +
-      '<div class="bar-tools">' +
-      '<input type="month" id="rM" value="' + mes + '">' +
+      pageHead("file-text", "Relatórios", "Horas trabalhadas, extras, devidas, faltas e saldo por mês, em PDF, impressão ou Excel.") +
+      '<div class="bar-tools"><input type="month" id="rM" value="' + mes + '">' +
       '<select id="rF" style="max-width:280px"><option value="0">Todos (consolidado)</option>' +
       f.data.map(function (x) { return '<option value="' + x.id + '">' + esc(x.nome) + (x.ativo ? "" : " (desligado)") + "</option>"; }).join("") + "</select>" +
-      '<button class="btn" id="rG"><i data-lucide="play"></i> Gerar</button><button class="btn sec hidden" id="rP"><i data-lucide="printer"></i> Imprimir / PDF</button></div>' +
+      '<button class="btn" id="rG"><i data-lucide="play"></i> Gerar</button><button class="btn sec hidden" id="rP"><i data-lucide="printer"></i> Imprimir / PDF</button><button class="btn sec hidden" id="rX"><i data-lucide="download"></i> Excel (CSV)</button></div>' +
       '<div id="rOut"></div>';
-    $("rG").addEventListener("click", function () { gerar(f.data); });
+    var csv = [], nomeCsv = "";
+    $("rG").addEventListener("click", async function () { var o = await gerar(f.data); csv = o.csv; nomeCsv = o.nome; });
     $("rP").addEventListener("click", function () { window.print(); });
-  }
-
-  function diasDoMes(ym) {
-    var p = ym.split("-"), ano = Number(p[0]), m = Number(p[1]);
-    var n = new Date(ano, m, 0).getDate(), out = [];
-    for (var d = 1; d <= n; d++) out.push(ym + "-" + String(d).padStart(2, "0"));
-    return out;
-  }
-  function minutosDia(m) {
-    var t = {}; m.forEach(function (x) { t[x.tipo] = new Date(x.momento).getTime(); });
-    var tot = 0;
-    if (t.entrada && t.almoco_saida) tot += (t.almoco_saida - t.entrada) / 60000;
-    if (t.almoco_retorno && t.saida) tot += (t.saida - t.almoco_retorno) / 60000;
-    if (t.entrada && t.saida && !t.almoco_saida && !t.almoco_retorno) tot += (t.saida - t.entrada) / 60000;
-    return tot;
+    $("rX").addEventListener("click", function () { baixarCsv(nomeCsv, csv); });
   }
 
   async function gerar(funcs) {
     var ym = $("rM").value, fid = Number($("rF").value);
-    if (!ym) return;
+    if (!ym) return { csv: [], nome: "" };
     $("rOut").innerHTML = '<div class="skel" style="height:160px"></div>';
-    var dias = diasDoMes(ym), ini = dias[0], fim = dias[dias.length - 1];
-    var bs = await buscarTudo(function () { return db.from("batidas").select("id,funcionario_id,tipo,data,momento").gte("data", ini).lte("data", fim).order("momento"); });
-    var inv = await buscarTudo(function () { return db.from("batidas_invalidadas").select("batida_id"); });
-    var fer = await db.from("feriados").select("data,descricao").gte("data", ini).lte("data", fim);
-    var invSet = {}; inv.forEach(function (i) { invSet[i.batida_id] = 1; });
-    var ferMap = {}; (fer.data || []).forEach(function (x) { ferMap[x.data] = x.descricao; });
-    var h = hoje(), tol = cfg.tolerancia_min || 0, uteis = cfg.dias_uteis || [1, 2, 3, 4, 5];
+    var dias = diasDoMes(ym), ini = dias[0], fim = dias[dias.length - 1], tol = cfg.tolerancia_min || 0;
+    var dados = await carregarPeriodo(ini, fim);
     var lista = fid ? funcs.filter(function (x) { return x.id === fid; }) : funcs;
-
-    var resultados = lista.map(function (p) {
-      var meus = bs.filter(function (b) { return b.funcionario_id === p.id && !invSet[b.id]; });
-      var res = { p: p, dias: [], trab: 0, extra: 0, dev: 0, faltas: 0, diasTrab: 0 };
-      dias.forEach(function (d) {
-        if (d > h) return;
-        if (p.admissao && d < p.admissao) return;
-        if (p.desligamento && d > p.desligamento) return;
-        var dow = new Date(d + "T12:00:00").getDay();
-        var util = uteis.indexOf(dow) >= 0 && !ferMap[d];
-        var bd = meus.filter(function (b) { return b.data === d; });
-        var trab = minutosDia(bd), completo = bd.some(function (x) { return x.tipo === "saida"; });
-        var extra = 0, dev = 0, obs = ferMap[d] || (util ? "" : "Não útil");
-        if (bd.length === 0) {
-          if (util) { dev = C.jornadaMin; res.faltas++; obs = "Falta"; }
-        } else {
-          res.diasTrab++;
-          if (!completo) { obs = d === h ? "Em andamento" : "Batidas incompletas"; }
-          else {
-            var diff = util ? trab - C.jornadaMin : trab;
-            if (Math.abs(diff) <= tol && util) diff = 0;
-            if (diff > 0) extra = diff; else dev = -diff;
-          }
-        }
-        res.trab += trab; res.extra += extra; res.dev += dev;
-        res.dias.push({ d: d, bd: bd, trab: trab, extra: extra, dev: dev, obs: obs });
-      });
-      return res;
-    });
-
+    var resultados = lista.map(function (p) { return calcular(p, ini, fim, dados); });
+    var csv = [], html;
     var cab = '<div class="printonly"><img src="img/logo.png" alt=""><h2>Relatório de ponto — ' + esc(C.escola) + "</h2></div>";
-    var html = cab + "<p class=\"muted\">Período: " + dataBR(ini) + " a " + dataBR(fim) + " · Jornada: " + hm(C.jornadaMin) + " · Tolerância: " + tol + " min</p>";
+    html = cab + '<p class="muted">Período: ' + dataBR(ini) + " a " + dataBR(fim) + " · Jornada: " + hm(C.jornadaMin) + " · Tolerância: " + tol + " min</p>";
     if (!fid) {
-      html += '<div class="scroll"><table><tr><th>Funcionário</th><th>Dias trabalhados</th><th>Horas trabalhadas</th><th>Extras</th><th>Devidas</th><th>Faltas</th><th>Saldo</th></tr>' +
+      csv.push(["Funcionário", "Dias trabalhados", "Horas trabalhadas", "Extras", "Devidas", "Faltas", "Abonados", "Saldo"]);
+      html += '<div class="scroll"><table><tr><th>Funcionário</th><th>Dias trabalhados</th><th>Horas trabalhadas</th><th>Extras</th><th>Devidas</th><th>Faltas</th><th>Abonos</th><th>Saldo</th></tr>' +
         resultados.map(function (r) {
           var s = r.extra - r.dev;
-          return "<tr><td>" + esc(r.p.nome) + (r.p.ativo ? "" : ' <span class="tag off">desligado</span>') + "</td><td>" + r.diasTrab + "</td><td>" + hm(r.trab) + "</td><td class=\"pos\">" + hm(r.extra) + "</td><td class=\"neg\">" + hm(r.dev) + "</td><td>" + r.faltas + "</td><td class=\"" + (s < 0 ? "neg" : "pos") + "\">" + hm(s) + "</td></tr>";
+          csv.push([r.p.nome, r.diasTrab, hm(r.trab), hm(r.extra), hm(r.dev), r.faltas, r.abonados, hm(s)]);
+          return "<tr><td>" + esc(r.p.nome) + (r.p.ativo ? "" : ' <span class="tag off">desligado</span>') + "</td><td>" + r.diasTrab + "</td><td>" + hm(r.trab) + '</td><td class="pos">' + hm(r.extra) + '</td><td class="neg">' + hm(r.dev) + "</td><td>" + r.faltas + "</td><td>" + r.abonados + '</td><td class="' + (s < 0 ? "neg" : "pos") + '">' + hm(s) + "</td></tr>";
         }).join("") + "</table></div>";
+      var inc = resultados.reduce(function (a, r) { return a + r.incompletos; }, 0);
+      if (inc) html += '<div class="msg warn">' + inc + " dia(s) com batidas incompletas (sem saída) não entram no saldo. Confira em Registros de ponto.</div>";
     } else {
       var r = resultados[0], s = r.extra - r.dev;
-      html += "<h3>" + esc(r.p.nome) + " <small class=\"muted\">CPF " + maskCpf(r.p.cpf) + (r.p.cargo ? " · " + esc(r.p.cargo) : "") + "</small></h3>" +
+      csv.push(["Data", "Entrada", "Saída almoço", "Retorno", "Saída", "Trabalhado", "Extra", "Devido", "Observação"]);
+      html += "<h3>" + esc(r.p.nome) + ' <small class="muted">CPF ' + maskCpf(r.p.cpf) + (r.p.cargo ? " · " + esc(r.p.cargo) : "") + "</small></h3>" +
         '<div class="scroll"><table><tr><th>Data</th><th>Entrada</th><th>Saída almoço</th><th>Retorno</th><th>Saída</th><th>Trabalhado</th><th>Extra</th><th>Devido</th><th>Obs.</th></tr>' +
         r.dias.map(function (x) {
           var m = {}; x.bd.forEach(function (b) { m[b.tipo] = b.momento; });
+          csv.push([dataBR(x.d)].concat(TIPOS.map(function (t) { return m[t] ? hora(m[t]) : ""; }), [x.trab ? hm(x.trab) : "", x.extra ? hm(x.extra) : "", x.dev ? hm(x.dev) : "", x.obs]));
           return "<tr><td>" + dataBR(x.d) + "</td>" + TIPOS.map(function (t) { return "<td>" + (m[t] ? hora(m[t]) : "") + "</td>"; }).join("") +
-            "<td>" + (x.trab ? hm(x.trab) : "") + "</td><td class=\"pos\">" + (x.extra ? hm(x.extra) : "") + "</td><td class=\"neg\">" + (x.dev ? hm(x.dev) : "") + "</td><td>" + esc(x.obs) + "</td></tr>";
+            "<td>" + (x.trab ? hm(x.trab) : "") + '</td><td class="pos">' + (x.extra ? hm(x.extra) : "") + '</td><td class="neg">' + (x.dev ? hm(x.dev) : "") + "</td><td>" + esc(x.obs) + "</td></tr>";
         }).join("") + "</table></div>" +
-        '<p><b>Totais:</b> trabalhadas ' + hm(r.trab) + " · extras " + hm(r.extra) + " · devidas " + hm(r.dev) + " · faltas " + r.faltas + " · <b>saldo " + hm(s) + "</b></p>";
+        "<p><b>Totais:</b> trabalhadas " + hm(r.trab) + " · extras " + hm(r.extra) + " · devidas " + hm(r.dev) + " · faltas " + r.faltas + " · abonados " + r.abonados + " · <b>saldo " + hm(s) + "</b></p>";
+      csv.push([]); csv.push(["Totais", "", "", "", "", hm(r.trab), hm(r.extra), hm(r.dev), "Saldo " + hm(s)]);
     }
-    html += '<p class="muted" style="font-size:.8rem">Controle interno, não é registro de ponto homologado (Portaria MTP 671/2021). Ocorrências e abonos ainda não são considerados neste cálculo.</p>';
+    html += '<p class="muted" style="font-size:.8rem">Controle interno, não é registro de ponto homologado (Portaria MTP 671/2021). Ocorrências aprovadas (atestados, abonos, folgas) já estão consideradas.</p>';
     $("rOut").innerHTML = html;
-    $("rP").classList.remove("hidden");
+    $("rP").classList.remove("hidden"); $("rX").classList.remove("hidden");
     icones();
+    return { csv: csv, nome: "relatorio-" + ym + (fid ? "-" + resultados[0].p.nome.split(" ")[0].toLowerCase() : "") + ".csv" };
+  }
+
+  /* ---------- Escalas ---------- */
+  async function telaEsc() {
+    var e = await db.from("escalas").select("id,nome").order("id");
+    var v = await db.from("escala_versoes").select("*").order("vigencia_inicio", { ascending: false });
+    var f = await db.from("funcionarios").select("id,escala_id").eq("ativo", true);
+    if (e.error || v.error) throw (e.error || v.error);
+    var cards = e.data.map(function (x) {
+      var vs = v.data.filter(function (y) { return y.escala_id === x.id; });
+      var n = (f.data || []).filter(function (p) { return p.escala_id === x.id; }).length;
+      var atual = vs.filter(function (y) { return y.vigencia_inicio <= hoje(); })[0] || vs[0];
+      return '<div class="card" style="margin-bottom:14px"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><h3 style="margin:0;flex:1">' + esc(x.nome) + '</h3><span class="tag blue">' + n + " funcionário(s)</span>" +
+        (podeEditar() ? '<button class="btn sec sm" data-ev="' + x.id + '"><i data-lucide="plus"></i> Novo horário</button>' : "") + "</div>" +
+        (atual ? '<p style="margin:8px 0">Horário atual: <b>' + atual.entrada.slice(0, 5) + " às " + atual.saida.slice(0, 5) + "</b></p>" : "") +
+        (vs.length ? '<div class="scroll"><table><tr><th>A partir de</th><th>Entrada</th><th>Saída</th><th>Motivo</th></tr>' + vs.map(function (y) {
+          return "<tr><td>" + dataBR(y.vigencia_inicio) + "</td><td>" + y.entrada.slice(0, 5) + "</td><td>" + y.saida.slice(0, 5) + "</td><td>" + esc(y.motivo || "") + "</td></tr>";
+        }).join("") + "</table></div>" : "") + "</div>";
+    }).join("");
+    $("main").innerHTML = pageHead("calendar-clock", "Escalas", "Horários de entrada e saída. Cada mudança vira uma versão com data de início; o histórico fica guardado.") +
+      (cards || vazio("calendar-clock", "Nenhuma escala cadastrada."));
+    $("main").querySelectorAll("[data-ev]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var id = Number(b.getAttribute("data-ev"));
+        modal("<h2>Novo horário</h2>" +
+          '<div class="row2"><div><label>Entrada</label><input type="time" id="vE" value="07:00"></div><div><label>Saída</label><input type="time" id="vS" value="17:00"></div></div>' +
+          '<label>Vale a partir de</label><input type="date" id="vD" value="' + hoje() + '">' +
+          '<label>Motivo (obrigatório)</label><input id="vM"><div id="vMsg"></div>' +
+          '<div class="acts"><button class="btn sec" data-fechar>Cancelar</button><button class="btn" id="vOk">Salvar</button></div>',
+          function (root, fechar) {
+            root.querySelector("#vOk").addEventListener("click", async function () {
+              var m = root.querySelector("#vMsg"), en = root.querySelector("#vE").value, sa = root.querySelector("#vS").value, d = root.querySelector("#vD").value, mot = root.querySelector("#vM").value.trim();
+              if (!en || !sa || !d || sa <= en) { m.innerHTML = msgHtml("Confira entrada, saída e data."); return; }
+              if (mot.length < 3) { m.innerHTML = msgHtml("Informe o motivo."); return; }
+              var r = await db.from("escala_versoes").insert({ escala_id: id, entrada: en, saida: sa, vigencia_inicio: d, motivo: mot });
+              if (r.error) { m.innerHTML = msgHtml(r.error.message); return; }
+              await db.from("auditoria").insert({ acao: "escala.versao", detalhe: { escala_id: id, entrada: en, saida: sa, desde: d } });
+              fechar(); await recarregarEscalas(); ir("esc"); toast("Horário salvo.");
+            });
+          });
+      });
+    });
+  }
+  async function recarregarEscalas() {
+    var e = await db.from("escalas").select("id,nome").order("id");
+    var v = await db.from("escala_versoes").select("escala_id,entrada,saida,vigencia_inicio").order("vigencia_inicio");
+    escalas = (e.data || []).map(function (x) {
+      var vs = (v.data || []).filter(function (y) { return y.escala_id === x.id && y.vigencia_inicio <= hoje(); });
+      var ult = vs[vs.length - 1];
+      return { id: x.id, nome: x.nome, entrada: ult ? ult.entrada.slice(0, 5) : "", saida: ult ? ult.saida.slice(0, 5) : "" };
+    });
+  }
+
+  /* ---------- Configurações ---------- */
+  async function telaCfg() {
+    var c = await db.from("configuracoes").select("*").eq("id", 1).maybeSingle();
+    var fer = await db.from("feriados").select("*").order("data");
+    var tr = perfil === "admin" ? await db.rpc("listar_terminais") : { data: [] };
+    if (c.data) cfg = c.data;
+    var dow = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"], uteis = cfg.dias_uteis || [1, 2, 3, 4, 5];
+    var adm = perfil === "admin";
+    var terms = (tr.data || []).map(function (t) {
+      return "<tr><td>" + esc(t.nome) + "</td><td>" + (t.ativo ? '<span class="tag ok">Ativo</span>' : '<span class="tag off">Desativado</span>') + "</td><td>" + (t.ultimo_uso ? dataBR(t.ultimo_uso) + " " + hora(t.ultimo_uso) : "nunca") + '</td><td class="act">' + (t.ativo ? '<button class="btn danger sm" data-td="' + t.id + '">Desativar</button>' : "") + "</td></tr>";
+    }).join("");
+    $("main").innerHTML = pageHead("settings", "Configurações", "Regras de cálculo, feriados, leitor de digital e backup.") +
+      '<div class="card" style="margin-bottom:14px"><h3>Regras do ponto</h3>' +
+      '<label>Tolerância diária (minutos)</label><input type="number" id="cTol" min="0" max="30" value="' + (cfg.tolerancia_min || 0) + '" style="max-width:140px">' +
+      '<small class="muted">Diferenças de até esse tempo, para mais ou para menos, não geram hora extra nem devida.</small>' +
+      '<label>Dias úteis</label><div class="dias">' + dow.map(function (n, i) { return '<label class="chk"><input type="checkbox" data-dw="' + i + '"' + (uteis.indexOf(i) >= 0 ? " checked" : "") + "> " + n + "</label>"; }).join(" ") + "</div>" +
+      '<label class="chk" style="margin-top:12px"><input type="checkbox" id="cPin"' + (cfg.exigir_pin !== false ? " checked" : "") + "> Exigir PIN na recepção (recomendado)</label>" +
+      '<div id="cMsg"></div>' + (podeEditar() ? '<div class="acts"><button class="btn" id="cSalvar">Salvar regras</button></div>' : "") + "</div>" +
+      '<div class="card" style="margin-bottom:14px"><h3>Feriados e recessos</h3><div class="sub">Dias que não contam como falta.</div>' +
+      (podeEditar() ? '<div class="bar-tools"><input type="date" id="fD"><input id="fDesc" placeholder="Descrição (ex.: Natal)" style="max-width:260px"><button class="btn" id="fAdd"><i data-lucide="plus"></i> Adicionar</button></div>' : "") +
+      ((fer.data || []).length ? '<div class="scroll"><table><tr><th>Data</th><th>Descrição</th><th></th></tr>' + fer.data.map(function (x) {
+        return "<tr><td>" + dataBR(x.data) + "</td><td>" + esc(x.descricao) + '</td><td class="act">' + (podeEditar() ? '<button class="btn danger sm" data-fd="' + esc(x.data) + '"><i data-lucide="trash-2"></i></button>' : "") + "</td></tr>";
+      }).join("") + "</table></div>" : '<div class="empty">Nenhum feriado cadastrado.</div>') + "</div>" +
+      (adm ? '<div class="card" style="margin-bottom:14px"><h3>Terminais (leitor de digital)</h3><div class="sub">Cada computador de recepção com leitor precisa de um código próprio. O código aparece uma única vez: cole-o em "Configurar terminal" na tela da recepção.</div>' +
+        '<div class="bar-tools"><input id="tNome" placeholder="Nome (ex.: Recepção)" style="max-width:260px"><button class="btn" id="tAdd"><i data-lucide="plus"></i> Criar terminal</button></div>' +
+        ((tr.data || []).length ? '<div class="scroll"><table><tr><th>Nome</th><th>Situação</th><th>Último uso</th><th></th></tr>' + terms + "</table></div>" : '<div class="empty">Nenhum terminal criado.</div>') + "</div>" +
+        '<div class="card"><h3>Backup</h3><div class="sub">Baixa um arquivo com todos os dados (funcionários, batidas, ocorrências, escalas, feriados, auditoria). PINs e digitais nunca entram no backup.</div><button class="btn sec" id="bkp"><i data-lucide="download"></i> Baixar backup agora</button></div>' : "");
+
+    if ($("cSalvar")) $("cSalvar").addEventListener("click", async function () {
+      var dias = []; $("main").querySelectorAll("[data-dw]").forEach(function (x) { if (x.checked) dias.push(Number(x.getAttribute("data-dw"))); });
+      var tol = Number($("cTol").value);
+      if (!(tol >= 0 && tol <= 30)) { $("cMsg").innerHTML = msgHtml("Tolerância entre 0 e 30 minutos."); return; }
+      if (!dias.length) { $("cMsg").innerHTML = msgHtml("Marque ao menos um dia útil."); return; }
+      var r = await db.from("configuracoes").update({ tolerancia_min: tol, dias_uteis: dias, exigir_pin: $("cPin").checked }).eq("id", 1);
+      if (r.error) { $("cMsg").innerHTML = msgHtml(r.error.message); return; }
+      await db.from("auditoria").insert({ acao: "configuracoes.alterar", detalhe: { tolerancia_min: tol, dias_uteis: dias, exigir_pin: $("cPin").checked } });
+      cfg.tolerancia_min = tol; cfg.dias_uteis = dias; cfg.exigir_pin = $("cPin").checked;
+      toast("Regras salvas.");
+    });
+    if ($("fAdd")) $("fAdd").addEventListener("click", async function () {
+      var d = $("fD").value, t = $("fDesc").value.trim();
+      if (!d || t.length < 2) { toast("Informe a data e a descrição.", true); return; }
+      var r = await db.from("feriados").insert({ data: d, descricao: t });
+      if (r.error) { toast(r.error.code === "23505" ? "Esse dia já está cadastrado." : r.error.message, true); return; }
+      ir("cfg"); toast("Feriado adicionado.");
+    });
+    $("main").querySelectorAll("[data-fd]").forEach(function (b) {
+      b.addEventListener("click", async function () {
+        if (!confirm("Remover este feriado?")) return;
+        var r = await db.from("feriados").delete().eq("data", b.getAttribute("data-fd"));
+        if (r.error) { toast(r.error.message, true); return; }
+        ir("cfg");
+      });
+    });
+    if ($("tAdd")) $("tAdd").addEventListener("click", async function () {
+      var r = await db.rpc("criar_terminal", { p_nome: $("tNome").value });
+      if (r.error || !r.data || !r.data.ok) { toast((r.data && r.data.erro) || (r.error && r.error.message), true); return; }
+      modal("<h2>Código do terminal</h2><p>Copie agora. Por segurança, <b>ele não será mostrado de novo</b>.</p>" +
+        '<input id="tk" readonly value="' + esc(r.data.token) + '" style="font-family:monospace" onclick="this.select()">' +
+        '<div class="acts"><button class="btn sec" id="tkC"><i data-lucide="copy"></i> Copiar</button><button class="btn" data-fechar>Já guardei</button></div>',
+        function (root) {
+          root.querySelector("#tkC").addEventListener("click", function () { var i = root.querySelector("#tk"); i.select(); try { navigator.clipboard.writeText(i.value); toast("Copiado."); } catch (e) { document.execCommand("copy"); } });
+          var o = new MutationObserver(function () { if (!$("modalRoot").innerHTML) { o.disconnect(); ir("cfg"); } }); o.observe($("modalRoot"), { childList: true });
+        });
+    });
+    $("main").querySelectorAll("[data-td]").forEach(function (b) {
+      b.addEventListener("click", async function () {
+        if (!confirm("Desativar este terminal? A digital deixa de funcionar nele.")) return;
+        var r = await db.rpc("desativar_terminal", { p_id: Number(b.getAttribute("data-td")) });
+        if (r.error || !r.data || !r.data.ok) { toast((r.data && r.data.erro) || (r.error && r.error.message), true); return; }
+        ir("cfg");
+      });
+    });
+    if ($("bkp")) $("bkp").addEventListener("click", async function () {
+      this.disabled = true;
+      try {
+        var out = { gerado_em: new Date().toISOString(), escola: C.escola }, tabelas = ["funcionarios", "escalas", "escala_versoes", "alteracoes", "batidas", "batidas_invalidadas", "ocorrencias", "feriados", "configuracoes", "auditoria"];
+        for (var i = 0; i < tabelas.length; i++) { out[tabelas[i]] = await buscarTudo(function () { return db.from(tabelas[i]).select("*"); }); }
+        baixar("backup-ponto-" + hoje() + ".json", JSON.stringify(out, null, 1), "application/json");
+        await db.from("auditoria").insert({ acao: "backup.baixar", detalhe: {} });
+        toast("Backup baixado. Guarde em local seguro.");
+      } catch (e) { toast("Falha no backup: " + (e.message || e), true); }
+      this.disabled = false;
+    });
   }
 
   iniciarSessao();

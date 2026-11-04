@@ -193,3 +193,24 @@ main{padding:24px 22px 40px;max-width:1180px;width:100%;margin:0 auto;animation:
   .printonly{display:flex!important;align-items:center;gap:14px;margin-bottom:10px}
   .printonly img{height:46px}
 }
+
+/* ---- recepção: leitor de digital e quiosque ---- */
+.bio-box{display:flex;flex-direction:column;align-items:center;gap:4px;padding:16px;margin:6px 0 14px;border-radius:14px;background:var(--ok-soft);color:#14663a}
+.bio-box b{font-size:1.15rem}
+.bio-ic{width:64px;height:64px;border-radius:50%;background:#fff;display:grid;place-items:center;animation:pulso 1.8s ease-in-out infinite}
+.bio-ic svg{width:34px;height:34px}
+@keyframes pulso{0%,100%{box-shadow:0 0 0 0 rgba(20,102,58,.35)}50%{box-shadow:0 0 0 14px rgba(20,102,58,0)}}
+.rec-foot{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px;font-size:.8rem}
+.pill{display:inline-block;padding:4px 10px;border-radius:99px;background:#eef1f7;color:#4a5578;font-weight:600}
+.pill.ok{background:var(--ok-soft);color:#14663a}.pill.warn{background:var(--warn-soft);color:#7a4f00}.pill.err{background:var(--err-soft);color:#8f1d1d}
+.rec-foot a{color:#7b87a8;text-decoration:underline}
+.btn.ghost-danger{background:transparent;color:#b42318;border:1px solid transparent;margin-right:auto}
+.btn.ghost-danger:hover{background:var(--err-soft)}
+.dias{display:flex;gap:14px;flex-wrap:wrap;margin-top:6px}
+@media (min-width:900px){
+  .rec .card{max-width:620px;padding:34px}
+  .rec .clock{font-size:4.4rem}
+  .rec .pad button{font-size:1.9rem;padding:20px 0}
+  .rec .cpf{font-size:1.7rem}
+  .rec .btn.big{font-size:1.2rem;padding:18px}
+}

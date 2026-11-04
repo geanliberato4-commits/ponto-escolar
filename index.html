@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=20261104b">
+<link rel="stylesheet" href="style.css?v=20261104c">
 </head>
 <body>
 <div class="rec">
@@ -18,10 +18,18 @@
     <div class="date" id="date"></div>
 
     <div id="s1">
-      <label for="cpf" style="text-align:left">Digite o seu CPF</label>
-      <div class="field"><i data-lucide="user-round"></i><input id="cpf" class="cpf" inputmode="numeric" maxlength="14" placeholder="000.000.000-00" autocomplete="off"></div>
+      <div id="bioBox" class="bio-box hidden">
+        <div class="bio-ic"><i data-lucide="fingerprint"></i></div>
+        <b>Posicione o dedo no leitor</b>
+        <span class="muted">ou digite o CPF e o PIN abaixo</span>
+      </div>
+      <label for="cpf" id="cpfLabel" style="text-align:left">Digite o seu CPF</label>
+      <div class="field"><i data-lucide="user-round" id="cpfIcon"></i><input id="cpf" class="cpf" inputmode="numeric" maxlength="14" placeholder="000.000.000-00" autocomplete="off"></div>
       <div class="pad" id="pad"></div>
-      <button class="btn big" id="ok"><i data-lucide="arrow-right"></i> Continuar</button>
+      <div class="row2">
+        <button class="btn sec big hidden" id="voltar">Trocar CPF</button>
+        <button class="btn big" id="ok"><i data-lucide="arrow-right"></i> Continuar</button>
+      </div>
     </div>
 
     <div id="s2" class="hidden">
@@ -40,12 +48,14 @@
     </div>
 
     <div id="msg"></div>
-    <p class="muted" style="font-size:.78rem;margin:16px 0 0">Controle interno de ponto.</p>
+    <div class="rec-foot"><span class="pill" id="pill"></span><a href="#" id="cfgTerminal" class="muted">Configurar terminal</a></div>
+    <p class="muted" style="font-size:.78rem;margin:10px 0 0">Controle interno de ponto.</p>
   </div>
 </div>
 <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="config.js?v=20261104b"></script>
-<script src="recepcao.js?v=20261104b"></script>
+<script src="bio.js?v=20261104c"></script>
+<script src="config.js?v=20261104c"></script>
+<script src="recepcao.js?v=20261104c"></script>
 </body>
 </html>

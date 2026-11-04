@@ -17,3 +17,11 @@ Controle interno, não é registro de ponto homologado (Portaria MTP 671/2021).
 
 ## Visual
 Identidade Estação Criança: logo em `img/logo.png` (fundo transparente), fonte Inter e ícones Lucide (carregados por CDN). Menu lateral recolhível e layout responsivo.
+
+
+## Novidades (nov/2026)
+- **Recepção**: CPF + PIN (ou digital, quando o leitor estiver instalado). Sem PIN a pessoa não bate ponto: cadastre em Funcionários › PIN.
+- **Painel**: Ex-funcionários, Ocorrências e abonos, Banco de horas, Escalas, Configurações (tolerância, dias úteis, feriados, terminais, backup).
+- **Relatórios** em PDF/impressão e Excel (CSV). Backup completo em Configurações (sem PINs nem digitais).
+- **Leitor de digital**: veja `BIOMETRIA.md`. Rode `sql/pendente-digitais.sql` no Supabase uma vez.
+- No Supabase › Authentication: ative a proteção contra senhas vazadas e desative o cadastro público; crie um login para cada pessoa da direção.
