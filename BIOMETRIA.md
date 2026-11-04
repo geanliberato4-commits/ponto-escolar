@@ -1,8 +1,9 @@
-# Leitor de digital (ZKTeco ZK9500, USB)
+# Leitor de digital (Nitgen Fingkey Hamster DX, USB)
 
 O navegador não consegue falar com um leitor USB. Por isso o sistema usa um **programa local ("agente")**
 no computador da recepção. O site já está pronto para conversar com ele; falta só o agente, que depende do
-leitor e do SDK da ZKTeco em mãos para ser escrito e testado.
+leitor e do SDK da Nitgen (eNBioBSP) em mãos para ser escrito e testado.
+O contrato abaixo vale para qualquer marca: trocar de leitor só muda o agente, não o site.
 
 ## Como funciona
 1. Painel › Configurações › Terminais: criar o terminal e copiar o código (aparece uma única vez).
