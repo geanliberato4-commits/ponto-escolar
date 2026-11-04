@@ -25,3 +25,5 @@ Identidade Estação Criança: logo em `img/logo.png` (fundo transparente), font
 - **Relatórios** em PDF/impressão e Excel (CSV). Backup completo em Configurações (sem PINs nem digitais).
 - **Leitor de digital**: veja `BIOMETRIA.md`. Rode `sql/pendente-digitais.sql` no Supabase uma vez.
 - No Supabase › Authentication: ative a proteção contra senhas vazadas e desative o cadastro público; crie um login para cada pessoa da direção.
+- **Fechamento do mês**: em Relatórios, o administrador fecha o mês depois de conferir; fechado, ninguém lança nem corrige ponto, férias ou feriados nele até ser reaberto (com motivo).
+- **Dashboard** mostra pendências; **Calendário** da equipe; ocorrências incluem férias e afastamentos; busca por nome; relatório impresso com linhas de assinatura; Configurações avisa se o backup está velho (mais de 7 dias).

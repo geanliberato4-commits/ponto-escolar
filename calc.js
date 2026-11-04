@@ -7,6 +7,8 @@
   var TIPOS_OCORRENCIA = {
     atestado: { rotulo: "Atestado médico", efeito: "dia_abonado" },
     falta_justificada: { rotulo: "Falta justificada", efeito: "dia_abonado" },
+    ferias: { rotulo: "Férias", efeito: "dia_abonado" },
+    afastamento: { rotulo: "Afastamento / licença", efeito: "dia_abonado" },
     folga_abonada: { rotulo: "Dia abonado pela direção", efeito: "dia_abonado" },
     abono_atraso: { rotulo: "Abono de atraso", efeito: "minutos" },
     saida_antecipada: { rotulo: "Saída antecipada autorizada", efeito: "minutos" },

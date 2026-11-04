@@ -219,3 +219,13 @@ main{padding:24px 22px 40px;max-width:1180px;width:100%;margin:0 auto;animation:
 .comp{margin:14px 0 0;border:1px dashed #b9c4dd;border-radius:12px;padding:6px 14px;background:#f8faff;text-align:left}
 .comp-row{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--line);font-size:1rem}
 .comp-row:last-child{border-bottom:0}.comp-row span{color:var(--mut)}.comp-row b{text-align:right}
+
+/* calendário e assinatura */
+.cal table{border-collapse:separate;border-spacing:2px;width:auto;min-width:100%}
+.cal th,.cal td{padding:3px 0;min-width:26px;text-align:center;font-size:.76rem;border-radius:5px;border:0}
+.cal th small{color:var(--mut);font-weight:500}
+.cal .nm{text-align:left;padding:3px 10px;min-width:170px;white-space:nowrap;position:sticky;left:0;background:#fff;font-size:.86rem}
+.c-ok{background:#c9f0d8;color:#14663a}.c-warn{background:#fde9b8;color:#7a4f00}.c-err{background:#f9cdcd;color:#8f1d1d;font-weight:700}.c-abo{background:#cfe0fb;color:#1c4aa8;font-weight:700}.c-off{background:#eceff4}.c-vz{background:transparent}
+.legenda{display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-top:12px;font-size:.84rem;color:var(--mut)}
+.legenda span{display:inline-block;min-width:22px;text-align:center;border-radius:5px;padding:2px 4px}
+@media print{.assin{display:flex!important;gap:60px;margin-top:70px}.assin>div{flex:1;border-top:1px solid #000;padding-top:6px;text-align:center}}

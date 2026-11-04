@@ -139,7 +139,7 @@
     aba = t;
     $("appView").classList.remove("open");
     document.querySelectorAll("#tabs button").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-t") === t); });
-    var f = { dash: telaDash, func: telaFunc, ex: telaEx, reg: telaReg, ocor: telaOcor, rel: telaRel, esc: telaEsc, cfg: telaCfg }[t];
+    var f = { dash: telaDash, func: telaFunc, ex: telaEx, reg: telaReg, ocor: telaOcor, cal: telaCal, rel: telaRel, esc: telaEsc, cfg: telaCfg }[t];
     $("main").innerHTML = esqueleto();
     f().then(icones).catch(function (e) {
       $("main").innerHTML = '<div class="msg err"><i data-lucide="alert-triangle"></i><div>Não foi possível carregar esta tela. ' + esc(e.message || e) + '<br><button class="btn sec sm" id="tentar" style="margin-top:8px">Tentar de novo</button></div></div>';
@@ -207,10 +207,41 @@
       return '<li><div class="avatar">' + esc(iniciais(nomes[x.funcionario_id])) + '</div><div style="flex:1;min-width:0"><b>' + esc(nomes[x.funcionario_id]) + '</b><div class="muted" style="font-size:.82rem">' + NOMES[x.tipo] + " · " + (x.data === d ? "hoje" : dataBR(x.data)) + '</div></div><span class="tag blue">' + hora(x.momento) + "</span></li>";
     }).join("") + "</ul>" : '<div class="empty">Nenhum registro nos últimos 7 dias.</div>';
 
+    var pend = [], agora = minLocal(new Date().toISOString());
+    var porDia = {};
+    validas.forEach(function (x) { if (ativoSet[x.funcionario_id] && x.data < d) { var k = x.funcionario_id + "|" + x.data; (porDia[k] = porDia[k] || []).push(x.tipo); } });
+    Object.keys(porDia).sort().forEach(function (k) {
+      if (porDia[k].indexOf("saida") < 0) { var q = k.split("|"); pend.push({ ic: "log-out", t: "<b>" + esc(nomes[q[0]]) + "</b> sem batida de saída em " + dataBR(q[1]) + ".", ir: "reg", dt: q[1] }); }
+    });
+    if (hojeUtil) {
+      var ocHoje = await db.from("ocorrencias").select("funcionario_id,data_inicio,data_fim").eq("status", "aprovada").lte("data_inicio", d);
+      var cobertos = {}; (ocHoje.data || []).forEach(function (o) { if ((o.data_fim || o.data_inicio) >= d) cobertos[o.funcionario_id] = 1; });
+      f.data.forEach(function (p) {
+        if (porHoje[p.id] || cobertos[p.id]) return;
+        var e = escalas.filter(function (x) { return x.id === p.escala_id; })[0];
+        if (!e || !e.entrada) return;
+        var pr = e.entrada.split(":");
+        if (agora > Number(pr[0]) * 60 + Number(pr[1]) + tol) pend.push({ ic: "user-x", t: "<b>" + esc(p.nome) + "</b> ainda não bateu a entrada (previsto " + e.entrada + ").", ir: "reg", dt: d });
+      });
+    }
+    if (podeEditar()) {
+      var po = await db.from("ocorrencias").select("id").eq("status", "pendente");
+      if ((po.data || []).length) pend.push({ ic: "file-check", t: "<b>" + po.data.length + "</b> ocorrência(s) aguardando aprovação.", ir: "ocor" });
+    }
+    if (perfil === "admin") {
+      var dp = new Date(d + "T12:00:00"); dp.setDate(0);
+      var ymPrev = dp.toISOString().slice(0, 7), prim = await primeiraBatida();
+      if (prim && prim <= ymPrev + "-31" && !(await mesFechadoInfo(ymPrev))) pend.push({ ic: "lock", t: "O mês <b>" + ymPrev.split("-")[1] + "/" + ymPrev.split("-")[0] + "</b> ainda não foi fechado.", ir: "rel" });
+    }
+    var pendHtml = pend.length
+      ? '<div class="card" style="margin-bottom:14px"><h3>Pendências <span class="tag warn">' + pend.length + '</span></h3><ul class="list">' + pend.slice(0, 12).map(function (x) {
+        return '<li><div class="ic amber" style="width:34px;height:34px;border-radius:10px;display:grid;place-items:center"><i data-lucide="' + x.ic + '"></i></div><div style="flex:1">' + x.t + '</div><button class="btn sec sm" data-go="' + x.ir + '"' + (x.dt ? ' data-dt="' + x.dt + '"' : "") + ">Ver</button></li>";
+      }).join("") + "</ul>" + (pend.length > 12 ? '<div class="muted">E mais ' + (pend.length - 12) + "…</div>" : "") + "</div>"
+      : '<div class="msg ok"><i data-lucide="check-circle"></i><div>Nenhuma pendência no momento.</div></div>';
     function kpi(ic, cor, valor, rot) { return '<div class="card kpi"><div class="ic ' + cor + '"><i data-lucide="' + ic + '"></i></div><div><b>' + valor + "</b><span>" + rot + "</span></div></div>"; }
     var aviso = hojeUtil ? "" : '<div class="msg warn"><i data-lucide="calendar-off"></i><div>Hoje não é dia útil' + (ferMap[d] ? " (" + esc(ferMap[d]) + ")" : "") + ": faltas e taxa de presença não são calculadas.</div></div>";
     $("main").innerHTML =
-      pageHead("layout-dashboard", "Dashboard", "Situação do ponto hoje, " + dataBR(d) + ".") + aviso +
+      pageHead("layout-dashboard", "Dashboard", "Situação do ponto hoje, " + dataBR(d) + ".") + aviso + pendHtml +
       '<div class="kpis">' +
       kpi("users", "blue", ativos, "Funcionários ativos") +
       kpi("user-check", "green", presentes, "Presentes hoje") +
@@ -221,6 +252,9 @@
       (ativos ? '<div class="two"><div class="card"><h3>Frequência dos últimos 7 dias</h3><div class="sub">Funcionários ativos com ao menos uma batida no dia. Dias não úteis em cinza.</div><div class="chart">' + (barras || '<div class="empty">O gráfico começa no primeiro dia com registros.</div>') + '</div></div>' +
         '<div class="card"><h3>Últimos registros</h3><div class="sub">Batidas mais recentes da equipe.</div>' + ultHtml + "</div></div>"
         : vazio("users", "Nenhum funcionário ativo ainda. Vá em Funcionários › Novo funcionário."));
+    $("main").querySelectorAll("[data-go]").forEach(function (bt) {
+      bt.addEventListener("click", function () { if (bt.getAttribute("data-dt")) regData = bt.getAttribute("data-dt"); ir(bt.getAttribute("data-go")); });
+    });
   }
 
   /* ---------- Funcionários ---------- */
@@ -254,10 +288,11 @@
       pageHead(ativos ? "users" : "archive", ativos ? "Funcionários" : "Ex-funcionários",
         ativos ? "Cadastro da equipe. Quem sai da escola é removido (desligado) e o histórico de ponto continua guardado." : "Pessoas desligadas. O histórico delas continua guardado e dá para reativar.",
         (ativos && podeEditar() ? '<button class="btn" id="novo"><i data-lucide="user-plus"></i> Novo funcionário</button>' : "")) +
-      '<div class="bar-tools"><div class="grow muted">' + r.data.length + (r.data.length === 1 ? " pessoa" : " pessoas") + "</div></div>" +
+      '<div class="bar-tools"><div class="grow muted">' + r.data.length + (r.data.length === 1 ? " pessoa" : " pessoas") + '</div><div class="field" style="max-width:260px"><i data-lucide="search"></i><input id="busca" placeholder="Buscar por nome"></div></div>' +
       (r.data.length ? '<div class="scroll"><table><tr><th>Nome</th><th>CPF</th><th>Cargo</th><th>Escala</th><th>' + (ativos ? "Acesso ao ponto" : "Situação") + "</th><th></th></tr>" + linhas + "</table></div>"
         : vazio("users", ativos ? "Nenhum funcionário ativo por aqui." : "Nenhum ex-funcionário."));
     if ($("novo")) $("novo").addEventListener("click", function () { formFunc(null); });
+    if ($("busca")) ligarBusca($("busca"), $("main"));
     var porId = {}; r.data.forEach(function (p) { porId[p.id] = p; });
     $("main").querySelectorAll("[data-a]").forEach(function (b) {
       b.addEventListener("click", function () {
@@ -428,6 +463,7 @@
   async function telaReg() {
     regData = regData || hoje();
     var b = await db.from("batidas").select("*").eq("data", regData).order("momento");
+    var trav = !!(await mesFechadoInfo(regData.slice(0, 7)));
     var f = await db.from("funcionarios").select("id,nome,ativo").order("nome");
     var inv = await db.from("batidas_invalidadas").select("*");
     if (b.error || f.error) throw (b.error || f.error);
@@ -438,14 +474,16 @@
       return "<tr" + (i ? ' style="opacity:.55"' : "") + "><td>" + esc(nomes[x.funcionario_id] || "?") + "</td><td>" + NOMES[x.tipo] + "</td><td>" + hora(x.momento) + "</td><td>" +
         (x.origem === "ajuste" ? '<span class="tag warn">Ajuste</span>' : '<span class="tag">Recepção</span>') + "</td><td>" +
         (i ? '<span class="tag err">Invalidada</span><br><small>' + esc(i.motivo) + "</small>" : (x.motivo ? "<small>" + esc(x.motivo) + "</small>" : "")) + '</td><td class="act">' +
-        (podeEditar() && !i ? '<button class="btn sec sm" data-ed="' + x.id + '"><i data-lucide="pencil"></i> Corrigir hora</button> <button class="btn sec sm" data-inv="' + x.id + '"><i data-lucide="ban"></i> Invalidar</button>' : "") + "</td></tr>";
+        (podeEditar() && !i && !trav ? '<button class="btn sec sm" data-ed="' + x.id + '"><i data-lucide="pencil"></i> Corrigir hora</button> <button class="btn sec sm" data-inv="' + x.id + '"><i data-lucide="ban"></i> Invalidar</button>' : "") + "</td></tr>";
     }).join("");
     $("main").innerHTML =
       pageHead("clock", "Registros de ponto", "Batidas de cada dia. Para corrigir, invalide a batida com motivo e lance um ajuste.",
-        (podeEditar() ? '<button class="btn" id="rgAj"><i data-lucide="plus"></i> Lançar batida esquecida</button> <button class="btn sec" id="rgAb"><i data-lucide="file-check"></i> Abonar dia (atestado etc.)</button>' + (perfil === "admin" ? ' <button class="btn sec" id="rgSA"><i data-lucide="calendar-off"></i> Dia sem aula/feriado</button>' : "") : "")) +
-      '<div class="bar-tools"><label class="chk" for="rgD"><i data-lucide="calendar"></i> Dia</label><input type="date" id="rgD" value="' + regData + '"></div>' +
+        (podeEditar() && !trav ? '<button class="btn" id="rgAj"><i data-lucide="plus"></i> Lançar batida esquecida</button> <button class="btn sec" id="rgAb"><i data-lucide="file-check"></i> Abonar dia (atestado etc.)</button>' + (perfil === "admin" ? ' <button class="btn sec" id="rgSA"><i data-lucide="calendar-off"></i> Dia sem aula/feriado</button>' : "") : "")) +
+      (trav ? '<div class="msg warn"><i data-lucide="lock"></i><div>Este mês está fechado: não é possível lançar nem corrigir ponto. O administrador pode reabrir em Relatórios.</div></div>' : "") +
+      '<div class="bar-tools"><label class="chk" for="rgD"><i data-lucide="calendar"></i> Dia</label><input type="date" id="rgD" value="' + regData + '"><div class="field" style="max-width:260px"><i data-lucide="search"></i><input id="busca" placeholder="Buscar por nome"></div></div>' +
       (b.data.length ? '<div class="scroll"><table><tr><th>Funcionário</th><th>Tipo</th><th>Hora</th><th>Origem</th><th>Observação</th><th></th></tr>' + linhas + "</table></div>"
         : vazio("clock", "Nenhuma batida em " + dataBR(regData) + "."));
+    ligarBusca($("busca"), $("main"));
     $("rgD").addEventListener("change", function () { regData = this.value || hoje(); ir("reg"); });
     var ativosF = f.data.filter(function (x) { return x.ativo; });
     if ($("rgAj")) $("rgAj").addEventListener("click", function () { formAjuste(ativosF); });
@@ -552,6 +590,19 @@
       ocorrencias: dados.ocorrencias.filter(function (o) { return o.funcionario_id === p.id; })
     });
   }
+  async function mesFechadoInfo(ym) {
+    var r = await db.from("meses_fechados").select("*").eq("mes", ym + "-01").maybeSingle();
+    return r.data && !r.data.reaberto_em ? r.data : null;
+  }
+  function ligarBusca(input, escopo) {
+    input.addEventListener("input", function () {
+      var q = input.value.trim().toLowerCase();
+      escopo.querySelectorAll("tr").forEach(function (tr) {
+        if (tr.querySelector("th")) return;
+        tr.style.display = !q || tr.textContent.toLowerCase().indexOf(q) >= 0 ? "" : "none";
+      });
+    });
+  }
   async function primeiraBatida() {
     var r = await db.from("batidas").select("data").order("data").limit(1);
     return r.data && r.data[0] ? r.data[0].data : null;
@@ -584,7 +635,7 @@
       return "<tr><td>" + esc(nomes[x.funcionario_id] || "?") + "</td><td>" + esc(t.rotulo) + "</td><td>" + per + "</td><td>" + (x.minutos ? hm(x.minutos) : "") + "</td><td>" + esc(x.descricao || "") + "</td><td>" + (ST[x.status] || x.status) + '</td><td class="act">' + ac + "</td></tr>";
     }).join("");
     $("main").innerHTML =
-      pageHead("file-check", "Ocorrências e abonos", "Atestados, faltas justificadas, dias abonados e abonos de atraso. Só as aprovadas pelo administrador entram nos cálculos.",
+      pageHead("file-check", "Ocorrências e abonos", "Atestados, férias, afastamentos, faltas justificadas, dias abonados e abonos de atraso. Só as aprovadas pelo administrador entram nos cálculos.",
         (podeEditar() ? '<button class="btn" id="oNova"><i data-lucide="plus"></i> Nova ocorrência</button>' : "")) +
       (o.data.length ? '<div class="scroll"><table><tr><th>Funcionário</th><th>Tipo</th><th>Período</th><th>Minutos</th><th>Descrição</th><th>Situação</th><th></th></tr>' + linhas + "</table></div>"
         : vazio("file-check", "Nenhuma ocorrência registrada."));
@@ -638,7 +689,7 @@
       '<select id="rF" style="max-width:280px"><option value="0">Todos (consolidado)</option>' +
       f.data.map(function (x) { return '<option value="' + x.id + '">' + esc(x.nome) + (x.ativo ? "" : " (desligado)") + "</option>"; }).join("") + "</select>" +
       '<button class="btn" id="rG"><i data-lucide="play"></i> Gerar</button><button class="btn sec hidden" id="rP"><i data-lucide="printer"></i> Imprimir / PDF</button><button class="btn sec hidden" id="rX"><i data-lucide="download"></i> Excel (CSV)</button></div>' +
-      '<div id="rOut"></div>';
+      '<div id="rFech"></div><div id="rOut"></div>';
     var csv = [], nomeCsv = "";
     $("rG").addEventListener("click", async function () { var o = await gerar(f.data); csv = o.csv; nomeCsv = o.nome; });
     $("rP").addEventListener("click", function () { window.print(); });
@@ -680,11 +731,76 @@
         "<p><b>Totais:</b> trabalhadas " + hm(r.trab) + " · extras " + hm(r.extra) + " · devidas " + hm(r.dev) + " · faltas " + r.faltas + " · abonados " + r.abonados + " · <b>líquido do mês " + hm(s) + "</b></p>";
       csv.push([]); csv.push(["Totais", "", "", "", "", hm(r.trab), hm(r.extra), hm(r.dev), "Líquido " + hm(s)]);
     }
+    html += '<div class="printonly assin">' + (fid ? "<div>" + esc(resultados[0].p.nome) + "<br><small>Funcionário(a)</small></div>" : "") + "<div>Direção<br><small>" + esc(C.escola) + "</small></div></div>";
     html += '<p class="muted" style="font-size:.8rem">Controle interno, não é registro de ponto homologado (Portaria MTP 671/2021). Ocorrências aprovadas (atestados, abonos, folgas) já estão consideradas.</p>';
     $("rOut").innerHTML = html;
     $("rP").classList.remove("hidden"); $("rX").classList.remove("hidden");
+    await montarFechamento(ym);
     icones();
     return { csv: csv, nome: "relatorio-" + ym + (fid ? "-" + resultados[0].p.nome.split(" ")[0].toLowerCase() : "") + ".csv" };
+  }
+
+  async function montarFechamento(ym) {
+    var info = await mesFechadoInfo(ym), box = $("rFech");
+    var fim = diasDoMes(ym).pop(), terminou = fim < hoje();
+    if (info) {
+      box.innerHTML = '<div class="msg ok"><i data-lucide="lock"></i><div style="flex:1">Mês <b>fechado</b> em ' + dataBR(info.fechado_em) + (info.fechado_por ? " por " + esc(info.fechado_por) : "") + ". Ninguém consegue lançar ou corrigir ponto neste mês." +
+        (perfil === "admin" ? ' <button class="btn sec sm" id="rReabrir" style="margin-left:8px">Reabrir mês</button>' : "") + "</div></div>";
+      if ($("rReabrir")) $("rReabrir").addEventListener("click", async function () {
+        var mot = window.prompt("Motivo para reabrir " + ym.split("-")[1] + "/" + ym.split("-")[0] + ":");
+        if (!mot) return;
+        var r = await db.rpc("reabrir_mes", { p_mes: ym + "-01", p_motivo: mot });
+        if (r.error || !r.data || !r.data.ok) { toast((r.data && r.data.erro) || (r.error && r.error.message), true); return; }
+        toast("Mês reaberto."); montarFechamento(ym);
+      });
+    } else if (perfil === "admin" && terminou) {
+      box.innerHTML = '<div class="msg warn"><i data-lucide="unlock"></i><div style="flex:1">Este mês ainda está aberto. Depois de conferir e enviar à contabilidade, feche o mês para impedir alterações. <button class="btn sm" id="rFechar" style="margin-left:8px">Fechar mês</button></div></div>';
+      $("rFechar").addEventListener("click", async function () {
+        if (!confirm("Fechar o mês? Depois disso ninguém consegue lançar ou corrigir ponto nele, até o administrador reabrir.")) return;
+        var r = await db.rpc("fechar_mes", { p_mes: ym + "-01" });
+        if (r.error || !r.data || !r.data.ok) { toast((r.data && r.data.erro) || (r.error && r.error.message), true); return; }
+        toast("Mês fechado."); montarFechamento(ym);
+      });
+    } else box.innerHTML = "";
+    icones();
+  }
+
+  /* ---------- Calendário da equipe ---------- */
+  async function telaCal() {
+    var mes = hoje().slice(0, 7);
+    $("main").innerHTML = pageHead("calendar-days", "Calendário da equipe", "Uma linha por pessoa, um dia por coluna. Passe o mouse sobre o dia para ver detalhes.") +
+      '<div class="bar-tools"><input type="month" id="cM" value="' + mes + '"><button class="btn" id="cG"><i data-lucide="play"></i> Ver</button></div><div id="cOut"></div>';
+    async function ver() {
+      var ym = $("cM").value; if (!ym) return;
+      $("cOut").innerHTML = '<div class="skel" style="height:200px"></div>';
+      var dias = diasDoMes(ym), ini = dias[0], fim = dias[dias.length - 1];
+      var f = await db.from("funcionarios").select("id,nome,cpf,cargo,admissao,ativo,desligamento").order("nome");
+      if (f.error) throw f.error;
+      var lista = f.data.filter(function (p) { return p.ativo || (p.desligamento && p.desligamento >= ini); });
+      var dados = await carregarPeriodo(ini, fim);
+      var dow = ["D", "S", "T", "Q", "Q", "S", "S"];
+      var cab = "<tr><th class=\"nm\">Funcionário</th>" + dias.map(function (d) { return "<th title=\"" + dataBR(d) + "\">" + d.slice(8) + "<br><small>" + dow[Calc.diaSemana(d)] + "</small></th>"; }).join("") + "<th>Faltas</th></tr>";
+      var corpo = lista.map(function (p) {
+        var r = calcular(p, ini, fim, dados), m = {}; r.dias.forEach(function (x) { m[x.d] = x; });
+        var cels = dias.map(function (d) {
+          var x = m[d];
+          if (!x) return '<td class="c-vz"></td>';
+          var cl, tx;
+          if (x.bd.length) {
+            var comp = x.bd.some(function (b) { return b.tipo === "saida"; });
+            cl = comp ? "c-ok" : "c-warn"; tx = comp ? "✓" : "…";
+          } else if (x.obs === "Falta") { cl = "c-err"; tx = "F"; }
+          else if (/abonado/.test(x.obs)) { cl = "c-abo"; tx = "A"; }
+          else { cl = "c-off"; tx = ""; }
+          return '<td class="' + cl + '" title="' + esc(dataBR(d) + (x.obs ? " · " + x.obs : "") + (x.trab ? " · " + hm(x.trab) : "")) + '">' + tx + "</td>";
+        }).join("");
+        return '<tr><td class="nm">' + esc(p.nome) + (p.ativo ? "" : ' <span class="tag off">desligado</span>') + "</td>" + cels + "<td><b>" + r.faltas + "</b></td></tr>";
+      }).join("");
+      $("cOut").innerHTML = '<div class="scroll cal"><table>' + cab + corpo + "</table></div>" +
+        '<div class="legenda"><span class="c-ok">✓</span> Dia completo <span class="c-warn">…</span> Sem saída / em andamento <span class="c-err">F</span> Falta <span class="c-abo">A</span> Abonado (atestado, férias…) <span class="c-off"></span> Não útil / feriado</div>';
+    }
+    $("cG").addEventListener("click", ver);
+    await ver();
   }
 
   /* ---------- Escalas ---------- */
@@ -784,6 +900,11 @@
     if (c.data) cfg = c.data;
     var dow = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"], uteis = cfg.dias_uteis || [1, 2, 3, 4, 5];
     var adm = perfil === "admin";
+    var ub = adm ? await db.from("auditoria").select("momento").eq("acao", "backup.baixar").order("momento", { ascending: false }).limit(1) : { data: [] };
+    var ultB = ub.data && ub.data[0] ? ub.data[0].momento : null;
+    var diasB = ultB ? Math.floor((Date.now() - new Date(ultB).getTime()) / 864e5) : null;
+    var avisoB = ultB ? (diasB > 7 ? '<div class="msg warn"><i data-lucide="alert-triangle"></i><div>O último backup foi há ' + diasB + " dias (" + dataBR(dataLocal(new Date(ultB).getTime())) + "). Baixe um novo.</div></div>" : '<div class="msg ok"><i data-lucide="check-circle"></i><div>Último backup: ' + dataBR(dataLocal(new Date(ultB).getTime())) + ".</div></div>")
+      : '<div class="msg warn"><i data-lucide="alert-triangle"></i><div>Nenhum backup baixado ainda. Recomendado: baixar uma vez por semana.</div></div>';
     var terms = (tr.data || []).map(function (t) {
       return "<tr><td>" + esc(t.nome) + "</td><td>" + (t.ativo ? '<span class="tag ok">Ativo</span>' : '<span class="tag off">Desativado</span>') + "</td><td>" + (t.ultimo_uso ? dataBR(t.ultimo_uso) + " " + hora(t.ultimo_uso) : "nunca") + '</td><td class="act">' + (t.ativo ? '<button class="btn danger sm" data-td="' + t.id + '">Desativar</button>' : "") + "</td></tr>";
     }).join("");
@@ -802,7 +923,7 @@
       (adm ? '<div class="card" style="margin-bottom:14px"><h3>Terminais (leitor de digital)</h3><div class="sub">Cada computador de recepção com leitor precisa de um código próprio. O código aparece uma única vez: cole-o em "Configurar terminal" na tela da recepção.</div>' +
         '<div class="bar-tools"><input id="tNome" placeholder="Nome (ex.: Recepção)" style="max-width:260px"><button class="btn" id="tAdd"><i data-lucide="plus"></i> Criar terminal</button></div>' +
         ((tr.data || []).length ? '<div class="scroll"><table><tr><th>Nome</th><th>Situação</th><th>Último uso</th><th></th></tr>' + terms + "</table></div>" : '<div class="empty">Nenhum terminal criado.</div>') + "</div>" +
-        '<div class="card"><h3>Backup</h3><div class="sub">Baixa um arquivo com todos os dados (funcionários, batidas, ocorrências, escalas, feriados, auditoria). PINs e digitais nunca entram no backup.</div><button class="btn sec" id="bkp"><i data-lucide="download"></i> Baixar backup agora</button></div>' : "");
+        '<div class="card"><h3>Backup</h3><div class="sub">Baixa um arquivo com todos os dados (funcionários, batidas, ocorrências, escalas, feriados, auditoria). PINs e digitais nunca entram no backup.</div>' + avisoB + '<button class="btn sec" id="bkp"><i data-lucide="download"></i> Baixar backup agora</button></div>' : "");
 
     if ($("cSalvar")) $("cSalvar").addEventListener("click", async function () {
       var dias = []; $("main").querySelectorAll("[data-dw]").forEach(function (x) { if (x.checked) dias.push(Number(x.getAttribute("data-dw"))); });
