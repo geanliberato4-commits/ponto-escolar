@@ -1,4 +1,4 @@
-# Ponto Escolar — Creche Estação Criança
+# Ponto Escolar — Escola Estação Criança
 
 Site estático (HTML/CSS/JavaScript puro, sem build) ligado a um projeto Supabase.
 
