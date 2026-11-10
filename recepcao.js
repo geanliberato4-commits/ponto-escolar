@@ -4,10 +4,10 @@
   var bio = Bio.criar(C.agente);
   var $ = function (id) { return document.getElementById(id); };
   var TZ = "America/Sao_Paulo";
-  var NOMES = { entrada: "Entrada", almoco_saida: "Saída para o almoço", almoco_retorno: "Retorno do almoço", saida: "Saída" };
+  var NOMES = { entrada: "Entrada", almoco_saida: "Saída para o almoço", almoco_retorno: "Retorno do almoço", saida: "Saída", reuniao_entrada: "Entrada da reunião", reuniao_saida: "Saída da reunião" };
   var CHAVE = "ec_terminal_token";
   var etapa = "cpf";           // cpf -> pin -> confirmar
-  var qtdAtual = 0, cpfAtual = "", pinAtual = "", proxima = null, timer = null;
+  var qtdAtual = 0, cpfAtual = "", pinAtual = "", proxima = null, timer = null, bioId = null;
   var tela = "s1", bioLigada = false, bioRodando = false, templatesTimer = null;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -79,7 +79,7 @@
 
   function reiniciar() {
     clearTimeout(timer);
-    cpfAtual = ""; proxima = null;
+    cpfAtual = ""; proxima = null; bioId = null;
     etapaCpf(); mostrar("s1"); msg("");
   }
 
@@ -103,14 +103,21 @@
       if (r.error) throw r.error;
       var d = r.data;
       if (!d.ok) { var e = d.erro; etapaCpf(); msg(e); return; }
-      if (!d.proxima) { etapaCpf(); msg(d.nome + ", as 4 batidas de hoje já foram registradas.", "warn"); return; }
-      pinAtual = pin; proxima = d.proxima; qtdAtual = d.qtd;
-      $("who").textContent = "Olá, " + d.nome + "!";
-      $("next").textContent = "Registrar: " + (NOMES[d.proxima] || d.proxima) + " (batida " + (d.qtd + 1) + " de 4)";
-      mostrar("s2");
+      pinAtual = pin; proxima = d.proxima; qtdAtual = d.qtd; bioId = null;
+      telaConfirmar(d.nome, d.proxima, d.reuniao, d.qtd);
       timer = setTimeout(reiniciar, 30000);
     } catch (e) { falha(e, "identificar"); }
     finally { $("ok").disabled = false; }
+  }
+
+  function telaConfirmar(nome, tipo, reuniao, qtd) {
+    $("who").textContent = "Olá, " + nome + "!";
+    $("next").textContent = reuniao
+      ? "Sua jornada de hoje já foi registrada. Registrar: " + (NOMES[tipo] || tipo) + "?"
+      : "Registrar: " + (NOMES[tipo] || tipo) + " (batida " + (qtd + 1) + " de 4)";
+    mostrar("s2");
+    clearTimeout(timer);
+    timer = setTimeout(reiniciar, 30000);
   }
 
   function sucesso(d, metodo, n) {
@@ -135,10 +142,16 @@
   async function registrar() {
     $("confirm").disabled = true; msg("");
     try {
-      var r = await db.rpc("ponto_registrar_pin", { p_cpf: cpfAtual, p_pin: pinAtual, p_tipo: proxima, p_terminal: C.terminal });
+      var r = bioId
+        ? await db.rpc("ponto_registrar_bio_reuniao", { p_funcionario_id: bioId, p_token: lerToken(), p_tipo: proxima, p_terminal: C.terminal })
+        : await db.rpc("ponto_registrar_pin", { p_cpf: cpfAtual, p_pin: pinAtual, p_tipo: proxima, p_terminal: C.terminal });
       if (r.error) throw r.error;
       if (!r.data.ok) { var e = r.data.erro; reiniciar(); msg(e); return; }
-      pinAtual = ""; sucesso(r.data, "CPF e PIN", qtdAtual + 1);
+      pinAtual = "";
+      var reun = proxima === "reuniao_entrada" || proxima === "reuniao_saida";
+      var metodoTxt = bioId ? "Digital" : "CPF e PIN";
+      bioId = null;
+      sucesso(r.data, metodoTxt, reun ? 0 : qtdAtual + 1);
     } catch (e) { falha(e, "registrar"); }
     finally { $("confirm").disabled = false; }
   }
@@ -197,6 +210,13 @@
     try {
       var r = await db.rpc("ponto_registrar_bio", { p_funcionario_id: id, p_token: lerToken(), p_terminal: C.terminal });
       if (r.error) throw r.error;
+      if (r.data && r.data.confirmar_reuniao) {
+        // Jornada já registrada: pede confirmação antes de lançar reunião
+        bioId = id; proxima = r.data.proxima; pinAtual = "";
+        telaConfirmar("", r.data.proxima, true, 4);
+        $("who").textContent = "Jornada de hoje já registrada";
+        return;
+      }
       if (!r.data.ok) { msg(r.data.erro); setTimeout(function () { msg(""); }, 4000); return; }
       sucesso(r.data, "Digital", 0);
     } catch (e) { falha(e, "registrar_bio"); }

@@ -4,7 +4,19 @@
   var $ = function (id) { return document.getElementById(id); };
   var TZ = "America/Sao_Paulo";
   var TIPOS = ["entrada", "almoco_saida", "almoco_retorno", "saida"];
-  var NOMES = { entrada: "Entrada", almoco_saida: "Saída almoço", almoco_retorno: "Retorno almoço", saida: "Saída" };
+  var NOMES = { entrada: "Entrada", almoco_saida: "Saída almoço", almoco_retorno: "Retorno almoço", saida: "Saída", reuniao_entrada: "Entrada reunião", reuniao_saida: "Saída reunião" };
+  var TIPOS_AJ = TIPOS.concat(["reuniao_entrada", "reuniao_saida"]);
+  // Reuniões do dia em texto: "18:30–20:00" (entrada sem saída fica "18:30–?")
+  function reuTexto(bd) {
+    var r = bd.filter(function (b) { return b.tipo === "reuniao_entrada" || b.tipo === "reuniao_saida"; }).sort(function (a, b) { return new Date(a.momento) - new Date(b.momento); });
+    var out = [], ini = null;
+    r.forEach(function (b) {
+      if (b.tipo === "reuniao_entrada") { if (ini !== null) out.push(hora(ini) + "–?"); ini = b.momento; }
+      else if (ini !== null) { out.push(hora(ini) + "–" + hora(b.momento)); ini = null; }
+    });
+    if (ini !== null) out.push(hora(ini) + "–?");
+    return out.join(" · ");
+  }
   var perfil = null, meuEmail = "", escalas = [], cfg = { tolerancia_min: 5, dias_uteis: [1, 2, 3, 4, 5] };
   var aba = "dash";
 
@@ -210,6 +222,11 @@
     var pend = [], agora = minLocal(new Date().toISOString());
     var porDia = {};
     validas.forEach(function (x) { if (ativoSet[x.funcionario_id] && x.data < d) { var k = x.funcionario_id + "|" + x.data; (porDia[k] = porDia[k] || []).push(x.tipo); } });
+    var reuAb = {};
+    validas.forEach(function (x) { if (ativoSet[x.funcionario_id] && x.data < d && (x.tipo === "reuniao_entrada" || x.tipo === "reuniao_saida")) { var k = x.funcionario_id + "|" + x.data; reuAb[k] = (reuAb[k] || 0) + (x.tipo === "reuniao_entrada" ? 1 : -1); } });
+    Object.keys(reuAb).sort().forEach(function (k) {
+      if (reuAb[k] > 0) { var q = k.split("|"); pend.push({ ic: "users", t: "<b>" + esc(nomes[q[0]]) + "</b> bateu entrada de reunião sem saída em " + dataBR(q[1]) + ".", ir: "reg", dt: q[1] }); }
+    });
     Object.keys(porDia).sort().forEach(function (k) {
       if (porDia[k].indexOf("saida") < 0) { var q = k.split("|"); pend.push({ ic: "log-out", t: "<b>" + esc(nomes[q[0]]) + "</b> sem batida de saída em " + dataBR(q[1]) + ".", ir: "reg", dt: q[1] }); }
     });
@@ -548,7 +565,7 @@
   function formAjuste(funcs) {
     modal("<h2>Lançar batida esquecida</h2>" +
       '<label>Funcionário</label><select id="aF">' + funcs.map(function (x) { return '<option value="' + x.id + '">' + esc(x.nome) + "</option>"; }).join("") + "</select>" +
-      '<label>Tipo</label><select id="aT">' + TIPOS.map(function (t) { return '<option value="' + t + '">' + NOMES[t] + "</option>"; }).join("") + "</select>" +
+      '<label>Tipo</label><select id="aT">' + TIPOS_AJ.map(function (t) { return '<option value="' + t + '">' + NOMES[t] + "</option>"; }).join("") + "</select>" +
       '<div class="row2"><div><label>Data</label><input type="date" id="aD" value="' + regData + '"></div><div><label>Hora</label><input type="time" id="aH"></div></div>' +
       '<label>Motivo (obrigatório)</label><input id="aM"><div id="aMsg"></div>' +
       '<div class="acts"><button class="btn sec" data-fechar>Cancelar</button><button class="btn" id="aOk">Lançar</button></div>',
@@ -656,13 +673,14 @@
       '<label>Funcionário</label><select id="oF">' + funcs.map(function (x) { return '<option value="' + x.id + '">' + esc(x.nome) + "</option>"; }).join("") + "</select>" +
       '<label>Tipo</label><select id="oT">' + Object.keys(TIPOS_OC).map(function (k) { return '<option value="' + k + '">' + esc(TIPOS_OC[k].rotulo) + "</option>"; }).join("") + "</select>" +
       '<div class="row2"><div><label>De</label><input type="date" id="oI" value="' + (dataPad || hoje()) + '"></div><div><label>Até</label><input type="date" id="oFim" value="' + (dataPad || hoje()) + '"></div></div>' +
+      '<div id="oBoxExtra" class="msg warn hidden"><div>Classifica as horas extras desse dia como atividade extra (reunião, formação ou evento). Use também quando a funcionária ficou na escola sem bater entrada e saída da reunião.</div></div>' +
       '<div id="oBoxMin" class="hidden"><label>Minutos abonados</label><input type="number" id="oMin" min="1" max="600" placeholder="Ex.: 30"></div>' +
       '<label>Descrição / motivo (obrigatório)</label><input id="oD" placeholder="Ex.: atestado do Dr. Fulano, CID não informado"><div id="oMsg"></div>' +
       '<p class="muted" style="font-size:.82rem">' + (perfil === "admin" ? "Como administrador, a ocorrência já entra aprovada." : "Ficará pendente até o administrador aprovar.") + "</p>" +
       '<div class="acts"><button class="btn sec" data-fechar>Cancelar</button><button class="btn" id="oOk">Salvar</button></div>',
       function (root, fechar) {
         var tp = root.querySelector("#oT");
-        function ajusta() { root.querySelector("#oBoxMin").classList.toggle("hidden", TIPOS_OC[tp.value].efeito !== "minutos"); }
+        function ajusta() { root.querySelector("#oBoxMin").classList.toggle("hidden", TIPOS_OC[tp.value].efeito !== "minutos"); root.querySelector("#oBoxExtra").classList.toggle("hidden", TIPOS_OC[tp.value].efeito !== "motivo_extra"); }
         if (tipoPad) tp.value = tipoPad; if (funcPad) root.querySelector("#oF").value = String(funcPad);
         tp.addEventListener("change", ajusta); ajusta();
         root.querySelector("#oOk").addEventListener("click", async function () {
@@ -710,28 +728,51 @@
     var cab = '<div class="printonly"><img src="img/logo.png" alt=""><h2>Relatório de ponto — ' + esc(C.escola) + "</h2></div>";
     html = cab + '<p class="muted">Período: ' + dataBR(ini) + " a " + dataBR(fim) + " · Jornada: " + hm(C.jornadaMin) + " · Tolerância: " + tol + " min</p>";
     if (!fid) {
-      csv.push(["Funcionário", "Dias trabalhados", "Horas trabalhadas", "Extras (a pagar)", "Devidas (a descontar)", "Faltas", "Abonados", "Líquido do mês"]);
-      html += '<div class="scroll"><table><tr><th>Funcionário</th><th>Dias trabalhados</th><th>Horas trabalhadas</th><th>Extras (a pagar)</th><th>Devidas (a descontar)</th><th>Faltas</th><th>Abonos</th><th>Líquido do mês</th></tr>' +
+      csv.push(["Funcionário", "Dias trabalhados", "Jornada normal", "Extras comuns", "Extras de reunião", "Total de extras (a pagar)", "Devidas (a descontar)", "Faltas", "Abonados", "Líquido do mês", "Alertas"]);
+      html += '<div class="scroll"><table><tr><th>Funcionário</th><th>Dias trabalhados</th><th>Jornada normal</th><th>Extras comuns</th><th>Extras de reunião</th><th>Total de extras (a pagar)</th><th>Devidas (a descontar)</th><th>Faltas</th><th>Abonos</th><th>Líquido do mês</th><th>Alertas</th></tr>' +
         resultados.map(function (r) {
           var s = r.extra - r.dev;
-          csv.push([r.p.nome, r.diasTrab, hm(r.trab), hm(r.extra), hm(r.dev), r.faltas, r.abonados, hm(s)]);
-          return "<tr><td>" + esc(r.p.nome) + (r.p.ativo ? "" : ' <span class="tag off">desligado</span>') + "</td><td>" + r.diasTrab + "</td><td>" + hm(r.trab) + '</td><td class="pos">' + hm(r.extra) + '</td><td class="neg">' + hm(r.dev) + "</td><td>" + r.faltas + "</td><td>" + r.abonados + '</td><td class="' + (s < 0 ? "neg" : "pos") + '">' + hm(s) + "</td></tr>";
+          csv.push([r.p.nome, r.diasTrab, hm(r.normal), hm(r.extraComum), hm(r.extraReuniao), hm(r.extra), hm(r.dev), r.faltas, r.abonados, hm(s), r.alertas.length]);
+          return "<tr><td>" + esc(r.p.nome) + (r.p.ativo ? "" : ' <span class="tag off">desligado</span>') + "</td><td>" + r.diasTrab + "</td><td>" + hm(r.normal) + "</td><td>" + hm(r.extraComum) + "</td><td>" + hm(r.extraReuniao) + '</td><td class="pos">' + hm(r.extra) + '</td><td class="neg">' + hm(r.dev) + "</td><td>" + r.faltas + "</td><td>" + r.abonados + '</td><td class="' + (s < 0 ? "neg" : "pos") + '">' + hm(s) + "</td><td>" + (r.alertas.length ? '<span class="tag warn">' + r.alertas.length + "</span>" : "") + "</td></tr>";
         }).join("") + "</table></div>";
+      var linhasMot = [];
+      resultados.forEach(function (r) { Object.keys(r.porMotivo).forEach(function (m) { linhasMot.push({ nome: r.p.nome, motivo: m, min: r.porMotivo[m] }); }); });
+      if (linhasMot.length) {
+        csv.push([]); csv.push(["Extras de reunião por motivo"]); csv.push(["Funcionário", "Motivo", "Horas"]);
+        html += "<h3>Extras de reunião por motivo</h3>" + '<div class="scroll"><table><tr><th>Funcionário</th><th>Motivo</th><th>Horas</th></tr>' +
+          linhasMot.map(function (l) { csv.push([l.nome, l.motivo, hm(l.min)]); return "<tr><td>" + esc(l.nome) + "</td><td>" + esc(l.motivo) + "</td><td>" + hm(l.min) + "</td></tr>"; }).join("") + "</table></div>" +
+          (linhasMot.some(function (l) { return l.motivo === Calc.SEM_MOTIVO; }) ? '<div class="msg warn">Há reuniões sem motivo informado. Em Ocorrências, lance “Extra: reunião pedagógica / formação / evento” no dia para classificar.</div>' : "");
+      }
+      var todosAl = [];
+      resultados.forEach(function (r) { r.alertas.forEach(function (a) { todosAl.push({ nome: r.p.nome, d: a.d, t: a.t }); }); });
+      if (todosAl.length) {
+        csv.push([]); csv.push(["Alertas para conferência"]); csv.push(["Funcionário", "Data", "Alerta"]);
+        html += "<h3>Alertas para conferência (" + todosAl.length + ")</h3>" + '<div class="scroll"><table><tr><th>Funcionário</th><th>Data</th><th>Alerta</th></tr>' +
+          todosAl.map(function (a) { csv.push([a.nome, dataBR(a.d), a.t]); return "<tr><td>" + esc(a.nome) + "</td><td>" + dataBR(a.d) + '</td><td><span class="tag warn">Atenção</span> ' + esc(a.t) + "</td></tr>"; }).join("") + "</table></div>" +
+          '<p class="muted" style="font-size:.8rem">Os alertas são avisos para conferência (jornada acima de 10h, intervalo de almoço abaixo de 1h ou acima de 2h, descanso entre jornadas abaixo de 11h). Valide as regras com a contabilidade e a convenção coletiva.</p>';
+      }
       var inc = resultados.reduce(function (a, r) { return a + r.incompletos; }, 0);
       if (inc) html += '<div class="msg warn">' + inc + " dia(s) com batidas incompletas (sem saída) não entram no saldo. Confira em Registros de ponto.</div>";
     } else {
       var r = resultados[0], s = r.extra - r.dev;
-      csv.push(["Data", "Entrada", "Saída almoço", "Retorno", "Saída", "Trabalhado", "Extra", "Devido", "Observação"]);
+      csv.push(["Data", "Entrada", "Saída almoço", "Retorno", "Saída", "Reunião", "Trabalhado", "Extra comum", "Extra reunião", "Devido", "Observação"]);
       html += "<h3>" + esc(r.p.nome) + ' <small class="muted">CPF ' + maskCpf(r.p.cpf) + (r.p.cargo ? " · " + esc(r.p.cargo) : "") + "</small></h3>" +
-        '<div class="scroll"><table><tr><th>Data</th><th>Entrada</th><th>Saída almoço</th><th>Retorno</th><th>Saída</th><th>Trabalhado</th><th>Extra</th><th>Devido</th><th>Obs.</th></tr>' +
+        '<div class="scroll"><table><tr><th>Data</th><th>Entrada</th><th>Saída almoço</th><th>Retorno</th><th>Saída</th><th>Reunião</th><th>Trabalhado</th><th>Extra comum</th><th>Extra reunião</th><th>Devido</th><th>Obs.</th></tr>' +
         r.dias.map(function (x) {
           var m = {}; x.bd.forEach(function (b) { m[b.tipo] = b.momento; });
-          csv.push([dataBR(x.d)].concat(TIPOS.map(function (t) { return m[t] ? hora(m[t]) : ""; }), [x.trab ? hm(x.trab) : "", x.extra ? hm(x.extra) : "", x.dev ? hm(x.dev) : "", x.obs]));
+          var al = x.alertas.length ? "⚠ " + x.alertas.join("; ") : "";
+          var obsTxt = x.obs + (al ? (x.obs ? " · " : "") + al : "");
+          csv.push([dataBR(x.d)].concat(TIPOS.map(function (t) { return m[t] ? hora(m[t]) : ""; }), [reuTexto(x.bd), x.trab ? hm(x.trab) : "", x.extraComum ? hm(x.extraComum) : "", x.extraReuniao ? hm(x.extraReuniao) : "", x.dev ? hm(x.dev) : "", obsTxt]));
           return "<tr><td>" + dataBR(x.d) + "</td>" + TIPOS.map(function (t) { return "<td>" + (m[t] ? hora(m[t]) : "") + "</td>"; }).join("") +
-            "<td>" + (x.trab ? hm(x.trab) : "") + '</td><td class="pos">' + (x.extra ? hm(x.extra) : "") + '</td><td class="neg">' + (x.dev ? hm(x.dev) : "") + "</td><td>" + esc(x.obs) + "</td></tr>";
+            "<td>" + esc(reuTexto(x.bd)) + "</td><td>" + (x.trab ? hm(x.trab) : "") + '</td><td class="pos">' + (x.extraComum ? hm(x.extraComum) : "") + '</td><td class="pos">' + (x.extraReuniao ? hm(x.extraReuniao) : "") + '</td><td class="neg">' + (x.dev ? hm(x.dev) : "") + "</td><td>" + esc(x.obs) + (al ? (x.obs ? "<br>" : "") + '<span class="tag warn">' + esc(al) + "</span>" : "") + "</td></tr>";
         }).join("") + "</table></div>" +
-        "<p><b>Totais:</b> trabalhadas " + hm(r.trab) + " · extras " + hm(r.extra) + " · devidas " + hm(r.dev) + " · faltas " + r.faltas + " · abonados " + r.abonados + " · <b>líquido do mês " + hm(s) + "</b></p>";
-      csv.push([]); csv.push(["Totais", "", "", "", "", hm(r.trab), hm(r.extra), hm(r.dev), "Líquido " + hm(s)]);
+        "<p><b>Totais:</b> jornada normal " + hm(r.normal) + " · extras comuns " + hm(r.extraComum) + " · extras de reunião " + hm(r.extraReuniao) + " · <b>total de extras " + hm(r.extra) + "</b> · devidas " + hm(r.dev) + " · faltas " + r.faltas + " · abonados " + r.abonados + " · <b>líquido do mês " + hm(s) + "</b></p>";
+      csv.push([]); csv.push(["Totais", "", "", "", "", "", hm(r.trab), hm(r.extraComum), hm(r.extraReuniao), hm(r.dev), "Total extras " + hm(r.extra) + " · Líquido " + hm(s)]);
+      var mot = Object.keys(r.porMotivo);
+      if (mot.length) {
+        html += "<p><b>Extras de reunião por motivo:</b> " + mot.map(function (k) { return esc(k) + " " + hm(r.porMotivo[k]); }).join(" · ") + "</p>";
+        mot.forEach(function (k) { csv.push(["Extra de reunião — " + k, hm(r.porMotivo[k])]); });
+      }
     }
     html += '<div class="printonly assin">' + (fid ? "<div>" + esc(resultados[0].p.nome) + "<br><small>Funcionário(a)</small></div>" : "") + "<div>Direção<br><small>" + esc(C.escola) + "</small></div></div>";
     html += '<p class="muted" style="font-size:.8rem">Controle interno, não é registro de ponto homologado (Portaria MTP 671/2021). Ocorrências aprovadas (atestados, abonos, folgas) já estão consideradas.</p>';
